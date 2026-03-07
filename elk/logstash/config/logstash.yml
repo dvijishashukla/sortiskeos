@@ -1,0 +1,11 @@
+http.host: "0.0.0.0"
+path.data: /usr/share/logstash/data
+path.logs: /usr/share/logstash/logs
+pipeline.workers: 1
+pipeline.batch.size: 64
+queue.type: persisted
+queue.max_bytes: 1024mb
+# Keep pipeline directory
+path.config: /usr/share/logstash/pipeline
+http.host: "0.0.0.0"
+xpack.monitoring.enabled: false

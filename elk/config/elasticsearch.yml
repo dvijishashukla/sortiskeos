@@ -1,0 +1,13 @@
+cluster.name: sortiske-es
+node.name: node-1
+network.host: 0.0.0.0
+discovery.type: single-node
+# Note: `bootstrap.memory_lock` removed to avoid startup failures when memlock
+# is not permitted inside the container on Windows/WSL2. Re-enable only if
+# you set appropriate ulimits/sysctls on the host and in Compose.
+# Reduce recovery throughput to avoid CPU spikes
+indices.recovery.max_bytes_per_sec: 20mb
+# Note: index-level settings (for example `index.number_of_replicas`) must
+# be applied with the indices settings API, not in elasticsearch.yml. Do not
+# add `index.*` entries here. You can set replicas per-index with:
+# curl -X PUT "http://localhost:9200/hdfs-logs/_settings" -H "Content-Type: application/json" -d '{"index":{"number_of_replicas":0}}'
