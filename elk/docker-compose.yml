@@ -43,6 +43,7 @@ services:
       - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
       - ./logs:/logs:ro
       - ./logstash/sincedb:/usr/share/logstash/data
+      - ../ml/collected_logs:/usr/share/logstash/collected_logs
     ports:
       - "5044:5044"
       - "5000:5000"

@@ -2,3 +2,9 @@
 numpy
 scikit-learn
 elasticsearch
+
+# Elasticsearch Python client
+elasticsearch>=8.0.0
+
+# Windows Event Log reading (Windows only)
+pywin32>=305; sys_platform == "win32"
