@@ -1,0 +1,255 @@
+import { useEffect, useState } from "react";
+import { fetchRootCause } from "../api.js";
+ 
+const DEFAULT_CLUSTER = {
+  id: 2, label: "Primary - Kernel / Network", isRoot: true,
+  anomalies: 15, score: -0.15, confidence: 94,
+  events: [
+    { time: "22:54:37", id: "1", source: "Root cause", msg: "System did not shut down cleanly", score: -0.15 },
+    { time: "22:54:35", id: "2", source: "Backend log", msg: "RSC offload failed on network adapter", score: -0.12 },
+  ],
+  description: "Fallback cluster data shown when the API is unavailable.",
+  fix: "Verify the FastAPI and Elasticsearch services are running and then refresh this page.",
+};
+ 
+const MODEL_STATS = [
+  { label: "Algorithm",     value: "Isolation Forest" },
+  { label: "Contamination", value: "0.05 (5%)" },
+  { label: "Clustering",    value: "Elasticsearch + FastAPI" },
+  { label: "Run mode",      value: "Live API" },
+];
+ 
+function formatTime(value) {
+  if (!value) return "Unknown";
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  }
+  if (typeof value === "string" && value.length >= 8) return value.slice(0, 8);
+  return String(value);
+}
+ 
+function ScoreBar({ score, max = 0.2 }) {
+  const pct = Math.min(100, (Math.abs(score) / max) * 100);
+  const r = Math.round(255 * (pct / 100));
+  const g = Math.round(255 * (1 - pct / 100));
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ flex: 1, height: 5, background: "#1a2030", borderRadius: 3, overflow: "hidden" }}>
+        <div style={{
+          width: `${pct}%`, height: "100%",
+          background: `linear-gradient(90deg, rgb(${r},${g},80), rgb(${r},${g},40))`,
+          borderRadius: 3,
+          transition: "width 1s ease",
+        }} />
+      </div>
+      <span style={{ fontFamily: "monospace", fontSize: 11, color: `rgb(${r},${g},80)`, minWidth: 44 }}>
+        {score.toFixed(3)}
+      </span>
+    </div>
+  );
+}
+ 
+function ConfidenceRing({ pct, isRoot }) {
+  const r = 28;
+  const circ = 2 * Math.PI * r;
+  const dash = (pct / 100) * circ;
+  return (
+    <svg width={70} height={70} style={{ transform: "rotate(-90deg)" }}>
+      <circle cx={35} cy={35} r={r} fill="none" stroke="#1a2030" strokeWidth={5} />
+      <circle cx={35} cy={35} r={r} fill="none"
+        stroke={isRoot ? "#e6734b" : "#3a4a5a"}
+        strokeWidth={5}
+        strokeDasharray={`${dash} ${circ}`}
+        strokeLinecap="round"
+        style={{ transition: "stroke-dasharray 1.2s ease" }}
+      />
+      <text x={35} y={35} textAnchor="middle" dominantBaseline="middle"
+        fill={isRoot ? "#e6734b" : "#6e7681"}
+        fontSize={13} fontWeight={700} fontFamily="monospace"
+        style={{ transform: "rotate(90deg)", transformOrigin: "35px 35px" }}>
+        {pct}%
+      </text>
+    </svg>
+  );
+}
+ 
+export default function RootCauseDetail({ onBack }) {
+  const [cluster, setCluster]         = useState(DEFAULT_CLUSTER);
+  const [usingFallback, setUsingFallback] = useState(false);
+  const [isLoading, setIsLoading]     = useState(true);
+ 
+  useEffect(() => {
+    let cancelled = false;
+ 
+    async function loadRootCause() {
+      setIsLoading(true);
+      try {
+        const data = await fetchRootCause();
+        if (cancelled) return;
+ 
+        if (data && data.clusterId != null) {
+          setCluster({
+            id:          data.clusterId,
+            label:       data.label,
+            isRoot:      data.clusterId !== 0,
+            anomalies:   data.anomalyCount,
+            score:       data.topScore,
+            confidence:  data.confidence,
+            events: (data.events || []).map((e) => ({
+              time:   formatTime(e.time),
+              id:     e.eventId || e.id || "",
+              source: e.source  || "Backend log",
+              msg:    e.message || "",
+              score:  e.score   || 0,
+            })),
+            description: data.description,
+            fix:         data.fix,
+          });
+          setUsingFallback(false);
+        } else {
+          setCluster(DEFAULT_CLUSTER);
+          setUsingFallback(true);
+        }
+      } catch {
+        if (cancelled) return;
+        setCluster(DEFAULT_CLUSTER);
+        setUsingFallback(true);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }
+ 
+    loadRootCause();
+    return () => { cancelled = true; };
+  }, []);
+ 
+  return (
+    <>
+      <style>{`
+        @keyframes fadeUp { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
+      `}</style>
+ 
+      <div style={{ padding: "32px", maxWidth: 1000, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 32, animation: "fadeSlideUp 0.5s ease both" }}>
+          <button className="action-btn" onClick={onBack} style={{
+            background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", color: "#8b949e",
+            borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontSize: 13,
+            display: "flex", alignItems: "center", gap: 8, fontWeight: 500,
+          }}>‹ Back</button>
+          <div>
+            <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e6edf3", margin: 0, letterSpacing: "-0.5px" }}>
+              Root Cause Analysis
+            </h1>
+            <div style={{ fontSize: 11, color: "#6e7681", marginTop: 6, letterSpacing: "1px", textTransform: "uppercase", fontWeight: 500 }}>
+              {usingFallback ? "Local Buffer" : "FastAPI Anomaly Clusters"}
+            </div>
+          </div>
+        </div>
+ 
+        {/* Model stats strip */}
+        <div style={{
+          background: "rgba(22, 27, 34, 0.4)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+          border: "1px solid rgba(255,255,255,0.03)",
+          borderRadius: 12, padding: "16px 20px", marginBottom: 24,
+          display: "flex", gap: 0, overflowX: "auto",
+          animation: "fadeUp 0.4s ease 0.05s both",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
+        }}>
+          {MODEL_STATS.map((s, i) => (
+            <div key={s.label} style={{
+              padding: "0 20px",
+              borderLeft: i === 0 ? "none" : "1px solid rgba(255,255,255,0.05)",
+              minWidth: 90,
+            }}>
+              <div style={{ fontSize: 9, color: "#3a4a5a", letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>{s.label}</div>
+              <div style={{ fontSize: 12, color: "#c9d1d9", fontFamily: "monospace" }}>{s.value}</div>
+            </div>
+          ))}
+        </div>
+ 
+        {/* Cluster card */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{
+            background: cluster.isRoot ? "rgba(230,115,75,0.02)" : "rgba(22, 27, 34, 0.3)",
+            backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+            border: `1px solid ${cluster.isRoot ? "rgba(230,115,75,0.12)" : "rgba(255,255,255,0.03)"}`,
+            borderLeft: `3px solid ${cluster.isRoot ? "#e6734b" : "rgba(255,255,255,0.1)"}`,
+            borderRadius: 12, overflow: "hidden",
+            animation: "fadeUp 0.4s ease 0.1s both",
+            boxShadow: "0 4px 24px rgba(0,0,0,0.1)",
+            opacity: isLoading ? 0.4 : 1,
+            transition: "opacity 0.3s",
+            pointerEvents: isLoading ? "none" : "auto",
+          }}>
+ 
+            {/* Cluster header */}
+            <div style={{
+              padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)",
+              display: "flex", alignItems: "center", gap: 20,
+              background: "rgba(13, 17, 23, 0.3)",
+            }}>
+              <ConfidenceRing pct={cluster.confidence} isRoot={cluster.isRoot} />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 11, color: "#6e7681" }}>CLUSTER #{cluster.id ?? "N/A"}</span>
+                  {cluster.isRoot && (
+                    <span style={{
+                      background: "rgba(230,115,75,0.12)", color: "#e6734b",
+                      border: "1px solid rgba(230,115,75,0.2)",
+                      borderRadius: 4, padding: "1px 8px", fontSize: 10, letterSpacing: 1,
+                    }}>ROOT CAUSE</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#e6edf3", fontFamily: "'Roboto', sans-serif" }}>{cluster.label}</div>
+                <div style={{ fontSize: 12, color: "#8b949e", marginTop: 4, lineHeight: 1.5 }}>{cluster.description}</div>
+              </div>
+              <div style={{ textAlign: "right", minWidth: 80 }}>
+                <div style={{ fontSize: 22, fontWeight: 600, color: cluster.isRoot ? "#e6734b" : "#6e7681", fontFamily: "'Roboto', sans-serif" }}>{cluster.anomalies}</div>
+                <div style={{ fontSize: 10, color: "#3a4a5a", letterSpacing: 1 }}>ANOMALIES</div>
+              </div>
+            </div>
+ 
+            <div style={{ padding: "12px 20px" }}>
+              <div style={{ fontSize: 10, color: "#3a4a5a", letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>Log Events</div>
+              {cluster.events.map((ev, ei) => (
+                <div key={ei} className="table-row" style={{
+                  display: "grid", gridTemplateColumns: "70px 50px 160px 1fr 120px",
+                  gap: 12, alignItems: "center",
+                  padding: "10px 14px",
+                  borderBottom: ei < cluster.events.length - 1 ? "1px solid rgba(255,255,255,0.03)" : "none",
+                }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 11, color: "#6e7681" }}>{ev.time}</span>
+                  <span style={{
+                    background: "rgba(255,95,95,0.1)", color: "#ff5f5f",
+                    border: "1px solid rgba(255,95,95,0.2)",
+                    borderRadius: 4, padding: "1px 6px", fontSize: 10,
+                    fontFamily: "monospace", textAlign: "center",
+                  }}>ID {ev.id}</span>
+                  <span style={{ fontSize: 11, color: "#8b949e", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.source}</span>
+                  <span style={{ fontSize: 12, color: "#c9d1d9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.msg}</span>
+                  <ScoreBar score={ev.score} />
+                </div>
+              ))}
+            </div>
+ 
+            {/* Fix suggestion */}
+            {cluster.isRoot && (
+              <div style={{
+                margin: "0 20px 16px",
+                background: "rgba(63,185,80,0.05)", border: "1px solid rgba(63,185,80,0.15)",
+                borderRadius: 6, padding: "12px 16px",
+              }}>
+                <div style={{ fontSize: 10, color: "#3fb950", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>⚙ Suggested Fix</div>
+                <div style={{ fontSize: 12, color: "#8b949e", lineHeight: 1.6, fontFamily: "monospace" }}>{cluster.fix}</div>
+              </div>
+            )}
+ 
+          </div>
+        </div>
+ 
+      </div>
+    </>
+  );
+}

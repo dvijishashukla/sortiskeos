@@ -1,0 +1,51 @@
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, Query, Request
+
+from data_access import get_local_anomalies, is_es_available
+from routes.logs import format_log
+
+router = APIRouter(tags=['anomalies'])
+
+
+@router.get('/anomalies')
+async def get_anomalies(
+    request: Request,
+    size: int = Query(default=20, ge=1, le=200),
+    cluster: str | None = Query(default=None),
+) -> List[Dict[str, Any]]:
+    es = getattr(request.app.state, 'es', None)
+    if not await is_es_available(es):
+        records = [format_log(item, source_is_hit=False) for item in get_local_anomalies()]
+        if cluster:
+            records = [item for item in records if str(item['cluster']) == cluster]
+        return records[:size]
+
+    filters: List[Dict[str, Any]] = [
+        {
+            'range': {
+                'score': {
+                    'lt': -0.05,
+                }
+            }
+        }
+    ]
+    if cluster:
+        filters.append({'term': {'cluster': cluster}})
+
+    body = {
+        'size': size,
+        'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
+        'query': {
+            'bool': {
+                'filter': filters
+            }
+        },
+    }
+
+    try:
+        response = await es.search(index='logs-*', body=body)
+        hits = response.get('hits', {}).get('hits', [])
+        return [format_log(hit) for hit in hits]
+    except Exception:
+        return []
