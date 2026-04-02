@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+elasticsearch
+aiohttp
+python-dotenv
+python-jose[cryptography]

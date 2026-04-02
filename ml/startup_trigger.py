@@ -1,176 +1,166 @@
-"""
-startup_trigger.py
-------------------
-Master startup script — runs everything in the correct order when the
-machine restarts after a crash or shutdown.
-
-Execution order:
-  1. log_collector.py  → reads OS logs, writes staging file
-  2. (wait for Logstash to ingest the staging file into Elasticsearch)
-  3. ml_pipeline.py    → reads from ES, detects anomalies, writes results back
-
-HOW TO REGISTER THIS AS A STARTUP TASK:
-─────────────────────────────────────────
-WINDOWS (Task Scheduler):
-  1. Open Task Scheduler → Create Task
-  2. Triggers tab → New → "At startup"  OR  "At log on"
-  3. Actions tab → New → Program: python
-     Arguments: C:\\path\\to\\startup_trigger.py
-  4. Conditions → uncheck "Start only if on AC power"
-  5. Settings → check "Run task as soon as possible after scheduled start is missed"
-
-  Or run this script once to register automatically (requires admin):
-      python startup_trigger.py --register-windows
-
-LINUX (systemd service):
-  Run this script once to install the systemd service:
-      sudo python startup_trigger.py --register-linux
-
-  Then enable it:
-      sudo systemctl enable log-analysis.service
-      sudo systemctl start log-analysis.service
-"""
-
+import logging
 import os
+import subprocess
 import sys
 import time
-import logging
-import platform
-import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-log = logging.getLogger(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+LAST_RUN_FILE = BASE_DIR / 'last_run.txt'
+LOG_FILE = BASE_DIR / 'trigger.log'
+LOG_COLLECTOR = BASE_DIR / 'log_collector.py'
+ML_PIPELINE = BASE_DIR / 'ml_pipeline.py'
+ES_URL = 'http://localhost:9200'
+ES_WAIT_SECONDS = 60
+ES_POLL_INTERVAL = 5
+COOLDOWN_SECONDS = int(os.getenv('COOLDOWN_SECONDS', '300'))
 
-PROJECT_DIR   = Path(__file__).parent.resolve()
-PYTHON        = sys.executable
-LOGSTASH_WAIT = 30   # seconds to wait for Logstash to ingest the staging file
+logger = logging.getLogger('startup_trigger')
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
+if not logger.handlers:
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 
-def run_step(script_name: str, args: list = []):
-    """Run a Python script as a subprocess and wait for it to finish."""
-    script_path = PROJECT_DIR / script_name
-    cmd = [PYTHON, str(script_path)] + args
-    log.info(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=str(PROJECT_DIR))
-    if result.returncode != 0:
-        log.error(f"{script_name} exited with code {result.returncode}")
-    return result.returncode == 0
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
 
+    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+    file_handler.setFormatter(formatter)
 
-def main():
-    log.info("=" * 55)
-    log.info("  Intelligent Log Analysis — Startup Pipeline")
-    log.info("=" * 55)
-
-    # Step 1: Collect OS logs around the shutdown event
-    log.info("Step 1/3: Collecting system logs...")
-    success = run_step("log_collector.py")
-    if not success:
-        log.error("Log collection failed. Aborting.")
-        sys.exit(1)
-
-    # Step 2: Wait for Logstash to pick up and ingest the staging file
-    log.info(f"Step 2/3: Waiting {LOGSTASH_WAIT}s for Logstash to ingest logs...")
-    time.sleep(LOGSTASH_WAIT)
-
-    # Step 3: Run ML analysis on the ingested logs
-    log.info("Step 3/3: Running ML anomaly detection...")
-    run_step("ml_pipeline.py", ["--mode", "once"])
-
-    log.info("Startup pipeline complete. Check Kibana for results.")
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  REGISTRATION HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-def register_windows_task():
-    """Register this script as a Windows Task Scheduler startup task."""
-    import subprocess
-    script_path = PROJECT_DIR / "startup_trigger.py"
-    task_name   = "IntelligentLogAnalysis"
-
-    xml = f"""<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
-    <BootTrigger>
-      <Delay>PT1M</Delay>  <!-- wait 1 minute after boot so network/ES is ready -->
-      <Enabled>true</Enabled>
-    </BootTrigger>
-  </Triggers>
-  <Actions>
-    <Exec>
-      <Command>{PYTHON}</Command>
-      <Arguments>"{script_path}"</Arguments>
-      <WorkingDirectory>{PROJECT_DIR}</WorkingDirectory>
-    </Exec>
-  </Actions>
-  <Settings>
-    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-  </Settings>
-</Task>"""
-
-    xml_file = PROJECT_DIR / "task.xml"
-    xml_file.write_text(xml, encoding="utf-16")
-
-    result = subprocess.run(
-        ["schtasks", "/Create", "/TN", task_name, "/XML", str(xml_file), "/F"],
-        capture_output=True, text=True
-    )
-    xml_file.unlink()  # clean up temp file
-
-    if result.returncode == 0:
-        log.info(f"Windows Task '{task_name}' registered successfully.")
-    else:
-        log.error(f"Failed to register task: {result.stderr}")
-
-
-def register_linux_service():
-    """Install a systemd service that runs this script on every boot."""
-    service_content = f"""[Unit]
-Description=Intelligent Log Analysis Startup Pipeline
-After=network.target docker.service
-Wants=docker.service
-
-[Service]
-Type=oneshot
-ExecStartPre=/bin/sleep 60
-ExecStart={PYTHON} {PROJECT_DIR}/startup_trigger.py
-WorkingDirectory={PROJECT_DIR}
-StandardOutput=journal
-StandardError=journal
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-"""
-    service_path = Path("/etc/systemd/system/log-analysis.service")
+def get_requests_module():
     try:
-        service_path.write_text(service_content)
-        subprocess.run(["systemctl", "daemon-reload"], check=True)
-        log.info(f"Service file written to {service_path}")
-        log.info("Run: sudo systemctl enable log-analysis.service")
-    except PermissionError:
-        log.error("Permission denied. Run with sudo.")
+        import requests
+    except ModuleNotFoundError:
+        logger.error(
+            'The requests package is required for the Elasticsearch health check. '
+            'Install it in your active Python environment before running startup_trigger.py.'
+        )
+        return None
+    return requests
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--register-windows", action="store_true",
-                        help="Register as Windows Task Scheduler startup task")
-    parser.add_argument("--register-linux", action="store_true",
-                        help="Install systemd service for Linux auto-start")
-    args = parser.parse_args()
+def read_last_run() -> datetime | None:
+    if not LAST_RUN_FILE.exists():
+        return None
 
-    if args.register_windows:
-        register_windows_task()
-    elif args.register_linux:
-        register_linux_service()
-    else:
-        main()
+    try:
+        raw_value = LAST_RUN_FILE.read_text(encoding='utf-8').strip()
+        if not raw_value:
+            return None
+        return datetime.fromisoformat(raw_value)
+    except Exception as exc:
+        logger.warning('Could not read last run timestamp from %s: %s', LAST_RUN_FILE, exc)
+        return None
+
+
+def write_last_run(now: datetime) -> None:
+    LAST_RUN_FILE.write_text(now.isoformat(), encoding='utf-8')
+    logger.info('Recorded successful run timestamp in %s', LAST_RUN_FILE)
+
+
+def is_in_cooldown(last_run: datetime | None, now: datetime) -> bool:
+    if last_run is None:
+        return False
+
+    if last_run.tzinfo is None:
+        last_run = last_run.replace(tzinfo=timezone.utc)
+
+    elapsed_seconds = (now - last_run).total_seconds()
+    if elapsed_seconds < COOLDOWN_SECONDS:
+        remaining = int(COOLDOWN_SECONDS - elapsed_seconds)
+        logger.info(
+            'Cooldown active. Last run was %s. Skipping pipeline for another %s seconds.',
+            last_run.isoformat(),
+            remaining,
+        )
+        return True
+
+    return False
+
+
+def wait_for_elasticsearch() -> bool:
+    requests = get_requests_module()
+    if requests is None:
+        return False
+
+    deadline = time.monotonic() + ES_WAIT_SECONDS
+    attempt = 1
+
+    while time.monotonic() < deadline:
+        try:
+            response = requests.get(ES_URL, timeout=5)
+            if response.ok:
+                logger.info('Elasticsearch is reachable at %s', ES_URL)
+                return True
+            logger.warning(
+                'Elasticsearch responded with status %s on attempt %s.',
+                response.status_code,
+                attempt,
+            )
+        except requests.RequestException as exc:
+            logger.warning('Elasticsearch not reachable on attempt %s: %s', attempt, exc)
+
+        attempt += 1
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        sleep_seconds = ES_POLL_INTERVAL if remaining >= ES_POLL_INTERVAL else remaining
+        logger.info('Waiting %.0f seconds before checking Elasticsearch again.', sleep_seconds)
+        time.sleep(sleep_seconds)
+
+    logger.error('Elasticsearch did not become reachable within %s seconds. Exiting cleanly.', ES_WAIT_SECONDS)
+    return False
+
+
+def run_script(script_path: Path) -> bool:
+    command = [sys.executable, str(script_path)]
+    logger.info('Running %s using %s', script_path.name, sys.executable)
+
+    try:
+        result = subprocess.run(command, cwd=str(BASE_DIR), check=False)
+    except Exception as exc:
+        logger.error('Failed to start %s: %s', script_path.name, exc)
+        return False
+
+    if result.returncode != 0:
+        logger.error('%s failed with exit code %s', script_path.name, result.returncode)
+        return False
+
+    logger.info('%s completed successfully.', script_path.name)
+    return True
+
+
+def main() -> int:
+    logger.info('Startup trigger started.')
+    logger.info('Cooldown window is set to %s seconds.', COOLDOWN_SECONDS)
+
+    now = datetime.now(timezone.utc)
+    last_run = read_last_run()
+    if is_in_cooldown(last_run, now):
+        return 0
+
+    logger.info('Waiting for Elasticsearch at %s', ES_URL)
+    if not wait_for_elasticsearch():
+        return 0
+
+    if not run_script(LOG_COLLECTOR):
+        logger.error('Stopping because log_collector.py did not complete successfully.')
+        return 1
+
+    if not run_script(ML_PIPELINE):
+        logger.error('Stopping because ml_pipeline.py did not complete successfully.')
+        return 1
+
+    write_last_run(datetime.now(timezone.utc))
+    logger.info('Startup trigger completed successfully.')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

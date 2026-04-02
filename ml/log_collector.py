@@ -18,7 +18,7 @@ from pathlib import Path
 # ── Config ─────────────────────────────────────────────────────────────────────
 OUTPUT_DIR     = Path(__file__).parent / "collected_logs"
 STAGING_FILE   = OUTPUT_DIR / "system_logs.json"  # Logstash watches this
-WINDOW_MINUTES = 30    # collect logs from N minutes before the shutdown event
+WINDOW_MINUTES = 180   # collect logs from N minutes before the shutdown event
 MAX_EVENTS     = 5000  # cap to avoid overwhelming the pipeline
 
 logging.basicConfig(
@@ -87,10 +87,11 @@ def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list:
         sys.exit(1)
 
     records  = []
-    channels = ["System", "Application"]
+    channels = ["System", "Application","Security"]
 
     for channel in channels:
         log.info(f"Reading Windows Event Log channel: {channel}")
+        handle = None
         try:
             handle = win32evtlog.OpenEventLog(None, channel)
             flags  = (win32evtlog.EVENTLOG_BACKWARDS_READ |
@@ -104,10 +105,11 @@ def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list:
                 if not events:
                     break
                 for event in events:
-                    if event.EventID in SHUTDOWN_EVENT_IDS:
+                    event_id = event.EventID & 0xFFFF
+                    if event_id in SHUTDOWN_EVENT_IDS:
                         shutdown_time = event.TimeGenerated
                         log.info(
-                            f"Found shutdown event {event.EventID} "
+                            f"Found shutdown event {event_id} "
                             f"at {shutdown_time}"
                         )
                         break
@@ -125,14 +127,17 @@ def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list:
             win32evtlog.CloseEventLog(handle)
             handle = win32evtlog.OpenEventLog(None, channel)
 
+            stop_channel_scan = False
             while True:
                 events = win32evtlog.ReadEventLog(handle, flags, 0)
                 if not events:
                     break
                 for event in events:
                     event_time = event.TimeGenerated.replace(tzinfo=None)
+                    event_id = event.EventID & 0xFFFF
 
                     if event_time < window_start:
+                        stop_channel_scan = True
                         break
 
                     if event_time <= shutdown_time:
@@ -140,17 +145,23 @@ def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list:
                         records.append({
                             "@timestamp": event_time.isoformat(),
                             "level":      _map_windows_level(
-                                              event.EventType, event.EventID),
+                                              event.EventType, event_id),
                             "source":     f"windows/{channel}",
-                            "event_id":   event.EventID,
+                            "event_id":   event_id,
                             "message":    message,
                             "host":       os.environ.get("COMPUTERNAME", "unknown")
                         })
-
-            win32evtlog.CloseEventLog(handle)
+                if stop_channel_scan:
+                    break
 
         except Exception as e:
             log.error(f"Error reading {channel} log: {e}")
+        finally:
+            if handle:
+                try:
+                    win32evtlog.CloseEventLog(handle)
+                except Exception:
+                    pass
 
     log.info(f"Collected {len(records)} Windows events.")
     return records[:MAX_EVENTS]

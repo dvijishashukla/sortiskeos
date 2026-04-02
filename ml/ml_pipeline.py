@@ -1,34 +1,34 @@
 """
 ml_pipeline.py
 --------------
-Self-contained ML pipeline for Intelligent Log Analysis.
-No external module imports needed — everything is in this single file.
+Resilient ML pipeline for Intelligent Log Analysis.
 
 Pipeline:
-  1. Fetch logs from Elasticsearch
+  1. Fetch logs from Elasticsearch or local file fallback
   2. Normalize log messages
   3. Build TF-IDF feature matrix
   4. Detect anomalies (Isolation Forest)
   5. Cluster anomalies (DBSCAN)
   6. Suggest root cause
-  7. Push results back to Elasticsearch
-
-Usage:
-  python ml_pipeline.py --mode once        # run once on startup
-  python ml_pipeline.py --mode realtime    # poll every 60 seconds
+  7. Persist results to Elasticsearch or local JSON
 """
 
+import json
+import logging
+import os
 import re
 import time
-import logging
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-from datetime import datetime
-from collections import Counter
 from elasticsearch import Elasticsearch, helpers
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import IsolationForest
 from sklearn.cluster import DBSCAN
+from sklearn.ensemble import IsolationForest
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 
 logging.basicConfig(
@@ -37,22 +37,71 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Elasticsearch config ───────────────────────────────────────────────────────
-ES_HOST      = "http://localhost:9200"
-SOURCE_INDEX = "system-logs-*"   # where Logstash writes raw logs
-ANOMALY_INDEX = "log-anomalies"  # where we write ML results
-BATCH_SIZE   = 1000
-POLL_INTERVAL = 60               # seconds between runs in realtime mode
+ES_HOST = "http://localhost:9200"
+SOURCE_INDEX = "system-logs-*"
+ANOMALY_INDEX = "log-anomalies"
+BATCH_SIZE = 1000
+POLL_INTERVAL = 60
+ML_N_JOBS = int(os.getenv("ML_N_JOBS", "1"))
+
+BASE_DIR = Path(__file__).resolve().parent
+COLLECTED_LOGS_DIR = BASE_DIR / "collected_logs"
+LOCAL_LOG_FILE = COLLECTED_LOGS_DIR / "system_logs.json"
+LOCAL_RESULTS_FILE = COLLECTED_LOGS_DIR / "ml_results.json"
+
+logging.getLogger("elastic_transport").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 1 — Fetch logs from Elasticsearch
-# ══════════════════════════════════════════════════════════════════════════════
+def _resolve_es_host() -> str:
+    return os.getenv("ES_HOST", ES_HOST)
+
+
+def _create_es_client(es_host: str) -> Elasticsearch:
+    return Elasticsearch(
+        es_host,
+        request_timeout=3,
+        max_retries=0,
+        retry_on_timeout=False,
+    )
+
+
+def _check_es_connection(es: Elasticsearch, es_host: str) -> bool:
+    try:
+        if es.ping():
+            return True
+    except Exception:
+        pass
+
+    log.warning(
+        "Elasticsearch is unavailable at %s. Switching to Local Mode using %s and %s.",
+        es_host,
+        LOCAL_LOG_FILE.name,
+        LOCAL_RESULTS_FILE.name,
+    )
+    return False
+
+
+def _read_json_lines(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+
+    records: list[dict] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    records.append(payload)
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
 def fetch_logs_from_es(es: Elasticsearch) -> pd.DataFrame:
-    """
-    Query Elasticsearch for the most recent logs.
-    Returns a DataFrame with: timestamp, level, message, source, host
-    """
     response = es.search(
         index=SOURCE_INDEX,
         body={
@@ -71,39 +120,52 @@ def fetch_logs_from_es(es: Elasticsearch) -> pd.DataFrame:
     for hit in hits:
         src = hit["_source"]
         records.append({
-            "es_id":     hit["_id"],
+            "es_id": hit.get("_id", ""),
             "timestamp": src.get("@timestamp", datetime.now().isoformat()),
-            "level":     str(src.get("level", "INFO")).upper(),
-            "message":   src.get("message", ""),
-            "source":    src.get("source", "unknown"),
-            "host":      src.get("host", "unknown")
+            "level": str(src.get("level", "INFO")).upper(),
+            "message": src.get("message", ""),
+            "source": src.get("source", "unknown"),
+            "host": src.get("host", "unknown")
         })
 
     df = pd.DataFrame(records)
-    log.info(f"Fetched {len(df)} logs from Elasticsearch.")
+    log.info("Fetched %s logs from Elasticsearch.", len(df))
     return df
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 2 — Normalize log messages
-# ══════════════════════════════════════════════════════════════════════════════
+def fetch_logs_from_file(path: Path = LOCAL_LOG_FILE) -> pd.DataFrame:
+    records = _read_json_lines(path)
+    if not records:
+        log.warning("No local logs found at %s.", path)
+        return pd.DataFrame()
 
-# Regex patterns for cleaning log messages
-IP_PATTERN     = re.compile(r"\b\d{1,3}(\.\d{1,3}){3}\b")   # IPv4 addresses
-NUMBER_PATTERN = re.compile(r"\b\d+\b")                       # standalone numbers
-HEX_ID_PATTERN = re.compile(r"\b[a-f0-9]{8,}\b")             # hex IDs
-PATH_PATTERN   = re.compile(r"/[\w/\-\.]+")                   # file/URL paths
-GUID_PATTERN   = re.compile(                                   # GUIDs like {abc-123}
+    normalized = []
+    for record in records[:BATCH_SIZE]:
+        normalized.append({
+            "timestamp": record.get("@timestamp") or record.get("time") or datetime.now().isoformat(),
+            "level": str(record.get("level", "INFO")).upper(),
+            "message": record.get("message") or record.get("log") or "",
+            "source": record.get("source", "unknown"),
+            "host": record.get("host", "unknown")
+        })
+
+    df = pd.DataFrame(normalized)
+    df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+    log.info("Fetched %s logs from local file %s.", len(df), path.name)
+    return df
+
+
+IP_PATTERN = re.compile(r"\b\d{1,3}(\.\d{1,3}){3}\b")
+NUMBER_PATTERN = re.compile(r"\b\d+\b")
+HEX_ID_PATTERN = re.compile(r"\b[a-f0-9]{8,}\b")
+PATH_PATTERN = re.compile(r"/[\w/\-\.]+")
+GUID_PATTERN = re.compile(
     r"\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?",
     re.IGNORECASE
 )
 
 
 def normalize_message(message: str) -> str:
-    """
-    Clean a log message by removing IPs, GUIDs, numbers, hex IDs.
-    Returns a lowercase clean string for TF-IDF processing.
-    """
     if not message or not isinstance(message, str):
         return "empty message"
     msg = GUID_PATTERN.sub(" ", message)
@@ -117,21 +179,13 @@ def normalize_message(message: str) -> str:
 
 
 def parse_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Add a clean_message column to the DataFrame."""
     df = df.copy()
     df["clean_message"] = df["message"].apply(normalize_message)
     log.info("Log messages normalized.")
     return df
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 3 — Feature Engineering (TF-IDF)
-# ══════════════════════════════════════════════════════════════════════════════
 def build_feature_matrix(clean_messages: list, max_features: int = 100):
-    """
-    Convert cleaned log messages into a TF-IDF numerical feature matrix.
-    Returns the dense matrix and the fitted vectorizer.
-    """
     vectorizer = TfidfVectorizer(
         max_features=max_features,
         stop_words="english",
@@ -139,44 +193,37 @@ def build_feature_matrix(clean_messages: list, max_features: int = 100):
         min_df=1
     )
     X = vectorizer.fit_transform(clean_messages).toarray()
-    log.info(f"Feature matrix shape: {X.shape} "
-             f"({X.shape[0]} logs x {X.shape[1]} TF-IDF features).")
+    log.info(
+        "Feature matrix shape: %s (%s logs x %s TF-IDF features).",
+        X.shape,
+        X.shape[0],
+        X.shape[1],
+    )
     return X, vectorizer
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 4 — Anomaly Detection (Isolation Forest)
-# ══════════════════════════════════════════════════════════════════════════════
 def detect_anomalies(X: np.ndarray, contamination: float = 0.2):
-    """
-    Run Isolation Forest to detect anomalous log entries.
-    Returns anomaly labels (1=anomaly, 0=normal) and anomaly scores.
-    """
     model = IsolationForest(
         n_estimators=100,
         contamination=contamination,
         random_state=42,
-        n_jobs=-1
+        n_jobs=ML_N_JOBS
     )
     raw_predictions = model.fit_predict(X)
     labels = np.where(raw_predictions == -1, 1, 0)
     scores = model.decision_function(X)
 
-    n_anomalies = labels.sum()
-    log.info(f"Anomaly detection complete: {n_anomalies} anomalies found "
-             f"out of {len(labels)} logs ({100*n_anomalies/len(labels):.1f}%).")
+    n_anomalies = int(labels.sum())
+    log.info(
+        "Anomaly detection complete: %s anomalies found out of %s logs (%.1f%%).",
+        n_anomalies,
+        len(labels),
+        100 * n_anomalies / len(labels),
+    )
     return labels, scores, model
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 5 — Clustering (DBSCAN)
-# ══════════════════════════════════════════════════════════════════════════════
-def cluster_anomalies(X: np.ndarray, anomaly_indices: np.ndarray,
-                      eps: float = 0.8, min_samples: int = 2):
-    """
-    Cluster anomalous logs using DBSCAN.
-    Returns cluster labels for each anomalous log (-1 = noise).
-    """
+def cluster_anomalies(X: np.ndarray, anomaly_indices: np.ndarray, eps: float = 0.8, min_samples: int = 2):
     if len(anomaly_indices) == 0:
         log.warning("No anomalies to cluster.")
         return np.array([])
@@ -185,28 +232,31 @@ def cluster_anomalies(X: np.ndarray, anomaly_indices: np.ndarray,
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_anomalies)
 
-    db = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean", n_jobs=-1)
+    db = DBSCAN(
+        eps=eps,
+        min_samples=min_samples,
+        metric="euclidean",
+        n_jobs=ML_N_JOBS
+    )
     cluster_labels = db.fit_predict(X_scaled)
 
     n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
-    n_noise    = (cluster_labels == -1).sum()
-    log.info(f"DBSCAN found {n_clusters} cluster(s) among anomalies "
-             f"({n_noise} noise points).")
+    n_noise = int((cluster_labels == -1).sum())
+    log.info("DBSCAN found %s cluster(s) among anomalies (%s noise points).", n_clusters, n_noise)
     return cluster_labels
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 6 — Root Cause Suggestion
-# ══════════════════════════════════════════════════════════════════════════════
-def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray,
-                       cluster_labels: np.ndarray, n_samples: int = 5) -> dict:
-    """
-    Identify the most likely root cause cluster and print a report.
-    The cluster with the most log entries = likely root cause.
-    """
+def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_labels: np.ndarray, n_samples: int = 5) -> dict:
     if len(anomaly_indices) == 0:
-        log.info("No anomalies detected — system appears healthy.")
-        return {}
+        log.info("No anomalies detected - system appears healthy.")
+        return {
+            "root_cause_cluster": None,
+            "anomaly_count": 0,
+            "cluster_size": 0,
+            "sample_messages": [],
+            "log_levels": {},
+            "root_cause_message": "",
+        }
 
     anomaly_df = df.iloc[anomaly_indices].copy()
     anomaly_df["cluster"] = cluster_labels
@@ -221,28 +271,31 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray,
     print("=" * 60)
 
     if len(valid_clusters) == 0:
-        print("[INFO] All anomalies are noise — no dominant cluster found.")
-        _print_cluster_samples(
-            anomaly_df[anomaly_df["cluster"] == -1],
-            label="NOISE / UNCLUSTERED",
-            n_samples=n_samples
-        )
-        return {"root_cause_cluster": None, "anomaly_count": len(anomaly_indices)}
+        print("[INFO] All anomalies are noise - no dominant cluster found.")
+        _print_cluster_samples(anomaly_df[anomaly_df["cluster"] == -1], label="NOISE / UNCLUSTERED", n_samples=n_samples)
+        sample_messages = anomaly_df["message"].head(n_samples).tolist()
+        return {
+            "root_cause_cluster": None,
+            "anomaly_count": len(anomaly_indices),
+            "cluster_size": len(anomaly_indices),
+            "sample_messages": sample_messages,
+            "log_levels": anomaly_df["level"].value_counts().to_dict(),
+            "root_cause_message": sample_messages[0] if sample_messages else "",
+        }
 
     cluster_counts = Counter(valid_clusters)
     root_cluster_id, root_cluster_size = cluster_counts.most_common(1)[0]
 
-    print(f"\n  ⚠  ROOT CAUSE CLUSTER  →  Cluster #{root_cluster_id}")
+    print(f"\n  [ROOT CAUSE CLUSTER] Cluster #{root_cluster_id}")
     print(f"     Log count in cluster  : {root_cluster_size}")
 
     for cluster_id, count in cluster_counts.most_common():
         cluster_logs = anomaly_df[anomaly_df["cluster"] == cluster_id]
-        levels  = cluster_logs["level"].value_counts().to_dict()
-        marker  = "  ★ ROOT CAUSE" if cluster_id == root_cluster_id else ""
+        levels = cluster_logs["level"].value_counts().to_dict()
+        marker = "  * ROOT CAUSE" if cluster_id == root_cluster_id else ""
         print(f"\n  --- Cluster #{cluster_id} ({count} logs){marker} ---")
         print(f"      Log levels: {levels}")
-        _print_cluster_samples(cluster_logs, label=f"Cluster #{cluster_id}",
-                               n_samples=n_samples)
+        _print_cluster_samples(cluster_logs, label=f"Cluster #{cluster_id}", n_samples=n_samples)
 
     noise_logs = anomaly_df[anomaly_df["cluster"] == -1]
     if len(noise_logs) > 0:
@@ -252,139 +305,191 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray,
     print("\n" + "=" * 60)
 
     root_logs = anomaly_df[anomaly_df["cluster"] == root_cluster_id]
+    sample_messages = root_logs["message"].head(n_samples).tolist()
     return {
         "root_cause_cluster": int(root_cluster_id),
-        "anomaly_count":      len(anomaly_indices),
-        "cluster_size":       int(root_cluster_size),
-        "sample_messages":    root_logs["message"].head(n_samples).tolist(),
-        "log_levels":         root_logs["level"].value_counts().to_dict()
+        "anomaly_count": len(anomaly_indices),
+        "cluster_size": int(root_cluster_size),
+        "sample_messages": sample_messages,
+        "log_levels": root_logs["level"].value_counts().to_dict(),
+        "root_cause_message": sample_messages[0] if sample_messages else "",
     }
 
 
 def _print_cluster_samples(cluster_df: pd.DataFrame, label: str, n_samples: int):
-    """Print sample log messages from a cluster."""
     samples = cluster_df[["timestamp", "level", "message"]].head(n_samples)
     print(f"\n      Sample logs from {label}:")
     for _, row in samples.iterrows():
         print(f"        [{row['timestamp']}] {row['level']:7s}  {row['message']}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 7 — Push anomaly results back to Elasticsearch
-# ══════════════════════════════════════════════════════════════════════════════
-def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame,
-                          anomaly_indices: np.ndarray,
-                          cluster_labels: np.ndarray):
-    """
-    Push anomalous log entries with scores and cluster IDs back to
-    Elasticsearch so Kibana can visualize them.
-    """
+def _infer_label(messages: list[str]) -> str:
+    lowered = [message.lower() for message in messages if isinstance(message, str)]
+    if any("disk" in message or "i/o" in message for message in lowered):
+        return "Disk I/O"
+    if any("memory" in message or "oom" in message or "commit" in message for message in lowered):
+        return "Memory Pressure"
+    if any("network" in message or "adapter" in message or "rsc" in message for message in lowered):
+        return "Kernel / Network"
+    return "Kernel / Network"
+
+
+def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_labels: np.ndarray, root_cause: dict, mode: str) -> None:
+    COLLECTED_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    anomalies = []
+    root_cluster = root_cause.get("root_cause_cluster")
+    if len(anomaly_indices) > 0:
+        anomaly_df = df.iloc[anomaly_indices].copy()
+        anomaly_df["cluster"] = cluster_labels
+        for _, row in anomaly_df.iterrows():
+            anomalies.append({
+                "@timestamp": row["timestamp"],
+                "time": row["timestamp"],
+                "level": row["level"],
+                "message": row["message"],
+                "source": row.get("source", "unknown"),
+                "host": row.get("host", "unknown"),
+                "score": float(row.get("anomaly_score", 0)),
+                "anomaly_score": float(row.get("anomaly_score", 0)),
+                "cluster": int(row["cluster"]),
+                "cluster_id": int(row["cluster"]),
+                "isRootCause": bool(root_cluster is not None and row["cluster"] == root_cluster),
+                "is_root_cause": bool(root_cluster is not None and row["cluster"] == root_cluster),
+            })
+
+    top_score = min((item["score"] for item in anomalies), default=0)
+    payload = {
+        "generated_at": datetime.now().isoformat(),
+        "mode": mode,
+        "source_file": str(LOCAL_LOG_FILE),
+        "summary": {
+            "root_cause_cluster": root_cluster,
+            "root_cause_message": root_cause.get("root_cause_message", ""),
+            "anomaly_count": int(root_cause.get("anomaly_count", len(anomalies)) or 0),
+            "cluster_size": int(root_cause.get("cluster_size", len(anomalies)) or 0),
+            "sample_messages": root_cause.get("sample_messages", []),
+            "log_levels": root_cause.get("log_levels", {}),
+            "top_score": float(top_score),
+            "label": _infer_label(root_cause.get("sample_messages", [])),
+            "description": (
+                f"Local Mode identified {int(root_cause.get('anomaly_count', len(anomalies)) or 0)} anomalies "
+                f"from {LOCAL_LOG_FILE.name}."
+            ),
+            "fix": "Review the top anomalies in this cluster and correlate them with the collected local system logs.",
+        },
+        "anomalies": anomalies,
+    }
+
+    with LOCAL_RESULTS_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+    log.info("Saved %s anomalies to local results file %s.", len(anomalies), LOCAL_RESULTS_FILE.name)
+
+
+def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_labels: np.ndarray, root_cause: dict):
     if len(anomaly_indices) == 0:
         log.info("No anomalies to push.")
         return
 
     anomaly_df = df.iloc[anomaly_indices].copy()
     anomaly_df["cluster"] = cluster_labels
+    root_cluster = root_cause.get("root_cause_cluster")
+    root_message = root_cause.get("root_cause_message", "")
 
     actions = []
     for _, row in anomaly_df.iterrows():
+        cluster_id = int(row["cluster"])
+        is_root_cause = bool(root_cluster is not None and cluster_id == root_cluster)
         actions.append({
             "_index": ANOMALY_INDEX,
             "_source": {
-                "@timestamp":    row["timestamp"],
-                "level":         row["level"],
-                "message":       row["message"],
-                "source":        row.get("source", "unknown"),
-                "host":          row.get("host", "unknown"),
+                "@timestamp": row["timestamp"],
+                "time": row["timestamp"],
+                "level": row["level"],
+                "message": row["message"],
+                "source": row.get("source", "unknown"),
+                "host": row.get("host", "unknown"),
+                "score": float(row.get("anomaly_score", 0)),
                 "anomaly_score": float(row.get("anomaly_score", 0)),
-                "cluster_id":    int(row["cluster"]),
-                "is_root_cause": bool(row["cluster"] == 0),
-                "analysed_at":   datetime.now().isoformat()
+                "cluster": cluster_id,
+                "cluster_id": cluster_id,
+                "isRootCause": is_root_cause,
+                "is_root_cause": is_root_cause,
+                "rootCause": root_message if is_root_cause else "",
+                "analysed_at": datetime.now().isoformat(),
             }
         })
 
     helpers.bulk(es, actions)
-    log.info(f"Pushed {len(actions)} anomalies to index '{ANOMALY_INDEX}'.")
+    log.info("Pushed %s anomalies to index '%s'.", len(actions), ANOMALY_INDEX)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  FULL PIPELINE — fetch → analyze → push results
-# ══════════════════════════════════════════════════════════════════════════════
-def run_analysis(es: Elasticsearch):
-    """Execute one full cycle of the ML analysis pipeline."""
-    log.info("─" * 50)
-    log.info("Starting ML analysis cycle...")
+def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
+    log.info("%s", "-" * 50)
+    log.info("Starting ML analysis cycle in %s mode...", mode)
 
-    # 1. Fetch logs from Elasticsearch
-    df = fetch_logs_from_es(es)
+    df = fetch_logs_from_es(es) if es is not None else fetch_logs_from_file()
     if df.empty:
         log.warning("No logs to analyze.")
+        if es is None:
+            save_results_locally(df, np.array([]), np.array([]), {}, mode)
         return
 
-    # 2. Normalize messages
     df = parse_and_normalize(df)
-
-    # 3. Build TF-IDF feature matrix
     X, _ = build_feature_matrix(df["clean_message"].tolist(), max_features=100)
 
-    # 4. Anomaly detection
     anomaly_labels, anomaly_scores, _ = detect_anomalies(X, contamination=0.2)
-    df["anomaly"]       = anomaly_labels
+    df["anomaly"] = anomaly_labels
     df["anomaly_score"] = anomaly_scores
-    anomaly_indices     = np.where(anomaly_labels == 1)[0]
+    anomaly_indices = np.where(anomaly_labels == 1)[0]
 
-    # 5. Cluster anomalies
     cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=2)
+    root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
 
-    # 6. Print root cause report
-    suggest_root_cause(df, anomaly_indices, cluster_labels)
-
-    # 7. Push anomalies back to Elasticsearch
-    push_anomalies_to_es(es, df, anomaly_indices, cluster_labels)
+    if es is not None:
+        push_anomalies_to_es(es, df, anomaly_indices, cluster_labels, root_cause)
+    else:
+        save_results_locally(df, anomaly_indices, cluster_labels, root_cause, mode)
 
     log.info("Analysis cycle complete.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  ENTRY POINTS
-# ══════════════════════════════════════════════════════════════════════════════
 def run_once():
-    """Run the pipeline a single time — good for startup trigger."""
-    es = Elasticsearch(ES_HOST)
-    if not es.ping():
-        log.error(f"Cannot connect to Elasticsearch at {ES_HOST}. Is it running?")
+    es_host = _resolve_es_host()
+    es = _create_es_client(es_host)
+    if _check_es_connection(es, es_host):
+        log.info("Connected to Elasticsearch at %s", es_host)
+        run_analysis(es, mode="elasticsearch")
         return
-    log.info(f"Connected to Elasticsearch at {ES_HOST}")
-    run_analysis(es)
+    run_analysis(mode="local")
 
 
 def run_realtime(interval: int = POLL_INTERVAL):
-    """Run the pipeline in a loop — polls ES every interval seconds."""
-    es = Elasticsearch(ES_HOST)
-    if not es.ping():
-        log.error(f"Cannot connect to Elasticsearch at {ES_HOST}.")
-        return
-    log.info(f"Real-time mode: analysing every {interval}s. Ctrl+C to stop.")
+    es_host = _resolve_es_host()
+    es = _create_es_client(es_host)
+    log.info("Real-time mode: analysing every %ss. Ctrl+C to stop.", interval)
 
     while True:
         try:
-            run_analysis(es)
-            log.info(f"Sleeping {interval}s until next analysis...")
+            if _check_es_connection(es, es_host):
+                run_analysis(es, mode="elasticsearch")
+            else:
+                run_analysis(mode="local")
+            log.info("Sleeping %ss until next analysis...", interval)
             time.sleep(interval)
         except KeyboardInterrupt:
             log.info("Stopped by user.")
             break
-        except Exception as e:
-            log.error(f"Pipeline error: {e}. Retrying in {interval}s...")
+        except Exception as exc:
+            log.error("Pipeline error: %s. Retrying in %ss...", exc, interval)
             time.sleep(interval)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(
-        description="ML Pipeline for Intelligent Log Analysis"
-    )
+
+    parser = argparse.ArgumentParser(description="ML Pipeline for Intelligent Log Analysis")
     parser.add_argument(
         "--mode",
         choices=["once", "realtime"],
