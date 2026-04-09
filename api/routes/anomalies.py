@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Query, Request
 
-from data_access import get_local_anomalies, is_es_available
+from data_access import ANOMALIES_INDEX, get_local_anomalies, is_es_available
 from routes.logs import format_log
 
 router = APIRouter(tags=['anomalies'])
@@ -21,17 +21,9 @@ async def get_anomalies(
             records = [item for item in records if str(item['cluster']) == cluster]
         return records[:size]
 
-    filters: List[Dict[str, Any]] = [
-        {
-            'range': {
-                'score': {
-                    'lt': -0.05,
-                }
-            }
-        }
-    ]
+    filters: List[Dict[str, Any]] = [{'match_all': {}}]
     if cluster:
-        filters.append({'term': {'cluster': cluster}})
+        filters.append({'term': {'cluster_id': cluster}})
 
     body = {
         'size': size,
@@ -44,7 +36,7 @@ async def get_anomalies(
     }
 
     try:
-        response = await es.search(index='logs-*', body=body)
+        response = await es.search(index=ANOMALIES_INDEX, body=body)
         hits = response.get('hits', {}).get('hits', [])
         return [format_log(hit) for hit in hits]
     except Exception:

@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import time
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,7 @@ LOG_FILE = BASE_DIR / 'trigger.log'
 LOG_COLLECTOR = BASE_DIR / 'log_collector.py'
 ML_PIPELINE = BASE_DIR / 'ml_pipeline.py'
 ES_URL = 'http://localhost:9200'
+DASHBOARD_URL = 'http://localhost:3000'
 ES_WAIT_SECONDS = 60
 ES_POLL_INTERVAL = 5
 COOLDOWN_SECONDS = int(os.getenv('COOLDOWN_SECONDS', '300'))
@@ -136,6 +138,22 @@ def run_script(script_path: Path) -> bool:
     return True
 
 
+def open_dashboard() -> None:
+    try:
+        if hasattr(os, 'startfile'):
+            os.startfile(DASHBOARD_URL)
+            logger.info('Opened dashboard in the default browser using os.startfile: %s', DASHBOARD_URL)
+            return
+
+        opened = webbrowser.open(DASHBOARD_URL)
+        if opened:
+            logger.info('Opened dashboard in the default browser: %s', DASHBOARD_URL)
+        else:
+            logger.warning('Browser open request was not acknowledged for %s', DASHBOARD_URL)
+    except Exception as exc:
+        logger.warning('Failed to open dashboard URL %s: %s', DASHBOARD_URL, exc)
+
+
 def main() -> int:
     logger.info('Startup trigger started.')
     logger.info('Cooldown window is set to %s seconds.', COOLDOWN_SECONDS)
@@ -157,6 +175,7 @@ def main() -> int:
         logger.error('Stopping because ml_pipeline.py did not complete successfully.')
         return 1
 
+    open_dashboard()
     write_last_run(datetime.now(timezone.utc))
     logger.info('Startup trigger completed successfully.')
     return 0

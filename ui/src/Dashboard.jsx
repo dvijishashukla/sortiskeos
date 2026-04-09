@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from "recharts";
 import { fetchStats, fetchTimeline, fetchCrashes, fetchAnomalies, triggerPipeline } from "./api.js";
 
@@ -38,6 +38,14 @@ function formatDisplayTime(timeString) {
   return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+function formatChartTimeLabel(timeString) {
+  if (!timeString) return "";
+  const normalized = typeof timeString === "string" && timeString.length <= 8 ? `1970-01-01T${timeString}` : timeString;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 function formatTimelineData(items) {
   if (!Array.isArray(items) || items.length === 0) return TIMELINE_DATA;
   return items.map((item, index) => {
@@ -48,6 +56,15 @@ function formatTimelineData(items) {
       : `${String(index).padStart(2, "0")}:00`;
     return { hour: label, score: Math.abs(Number(item?.score) || 0) };
   });
+}
+
+function getTimelineDomain(items) {
+  if (!Array.isArray(items) || items.length === 0) return [0, 1];
+  const scores = items.map((item) => Number(item?.score) || 0);
+  const maxScore = Math.max(...scores, 0);
+  if (maxScore <= 0) return [0, 1];
+  const paddedMax = maxScore < 0.1 ? Number((maxScore * 1.6).toFixed(3)) : Number((maxScore * 1.2).toFixed(3));
+  return [0, paddedMax || 1];
 }
 
 function formatCrashRows(items) {
@@ -65,6 +82,68 @@ function formatAnomalyRows(items) {
     message: item?.message || "No message available", score: Number(item?.score) || 0,
     isRootCause: Boolean(item?.isRootCause), cluster: item?.cluster ?? "",
   }));
+}
+
+function summarizeRootCause(message) {
+  if (!message) return "Unknown Crash";
+
+  const normalized = String(message).replace(/\s+/g, " ").trim();
+  const lower = normalized.toLowerCase();
+  const eventName = normalized.match(/Event Name:\s*([^:]+?)(?=\s+[A-Z][A-Za-z ]+:\s|$)/i)?.[1]?.trim();
+  const removedUrl = normalized.match(/Removed URL\s*\((https?:\/\/[^)]+)\)/i)?.[1];
+
+  const compactLabel = (value) => String(value)
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_\-\/]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .slice(0, 3)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+
+  if (eventName) {
+    const simplifiedEventName = eventName.toLowerCase();
+    if (simplifiedEventName.includes("startuprepaironline")) return "Startup Repair";
+    if (simplifiedEventName.includes("kernel-power")) return "Kernel Power";
+    if (simplifiedEventName.includes("bluescreen")) return "Blue Screen";
+    if (simplifiedEventName.includes("appcrash")) return "App Crash";
+    if (simplifiedEventName.includes("stoppedworking")) return "Service Failure";
+    return compactLabel(eventName);
+  }
+
+  if (removedUrl) {
+    try {
+      const parsedUrl = new URL(removedUrl);
+      const hostLabel = parsedUrl.hostname.replace(/^www\./i, "").split(".")[0];
+      const pathParts = parsedUrl.pathname.split("/").filter(Boolean);
+      const pathLabel = pathParts.slice(-2).join(" ");
+      const label = compactLabel(pathLabel || hostLabel || "URL Event");
+      if (label === "Upnp Eventing") return "UPnP Eventing";
+      return label;
+    } catch {
+      return "URL Event";
+    }
+  }
+
+  if (lower.includes("kernel-power") || lower.includes("event 41")) return "Kernel Power";
+  if (lower.includes("startup repair")) return "Startup Repair";
+  if (lower.includes("blue screen") || lower.includes("bugcheck")) return "Blue Screen";
+  if (lower.includes("appcrash")) return "App Crash";
+  if (lower.includes("driver")) return "Driver Failure";
+  if (lower.includes("disk")) return "Disk Failure";
+  if (lower.includes("memory")) return "Memory Error";
+  if (lower.includes("network")) return "Network Fault";
+  if (lower.includes("upnp")) return "UPnP Eventing";
+  if (lower.includes("dns")) return "DNS Error";
+
+  const faultBucket = normalized.match(/fault bucket\s*,?\s*type\s*\d+\s*event name:\s*([A-Za-z0-9_]+)/i)?.[1];
+  if (faultBucket) return compactLabel(faultBucket);
+
+  const leadingPhrase = normalized.match(/^[A-Za-z0-9._-]+(?:\s+[A-Za-z0-9._-]+){0,2}/)?.[0];
+  if (leadingPhrase) return compactLabel(leadingPhrase);
+
+  return "Unknown Crash";
 }
 
 function buildStats(stats) {
@@ -187,6 +266,8 @@ export default function Dashboard({ onNavigate = () => {} }) {
   useEffect(() => { loadDashboard(); }, []);
 
   const latestRootCause = anomalies.find((item) => item.isRootCause) || anomalies[0] || null;
+  const crashMarkerLabel = formatChartTimeLabel(crashHistory[0]?.time);
+  const timelineDomain = getTimelineDomain(timelineData);
   const filtered = anomalies.filter((a) => (levelFilter === "ALL" || a.level === levelFilter) && a.message.toLowerCase().includes(search.toLowerCase()));
 
   const handleTriggerPipeline = async () => {
@@ -269,12 +350,15 @@ export default function Dashboard({ onNavigate = () => {} }) {
             animation: "fadeSlideUp 0.6s ease both",
           }}>
             <div style={{ fontSize: 24, marginTop: 4, fontFamily: "'Roboto Mono', monospace", color: "#e6734b", opacity: 0.8 }}>⚠</div>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#e6734b", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>
                 Root Cause Identified
               </div>
-              <div style={{ fontSize: 16, color: "#e6edf3", lineHeight: 1.5 }}>
-                {latestRootCause ? latestRootCause.message : "No root cause anomaly detected matching critical thresholds."}
+              <div style={{
+                fontSize: 18, color: "#e6edf3", lineHeight: 1.5, maxWidth: "100%",
+                overflowWrap: "anywhere", wordBreak: "break-word",
+              }}>
+                {summarizeRootCause(latestRootCause?.message)}
               </div>
               <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
                 {latestRootCause && [
@@ -305,8 +389,8 @@ export default function Dashboard({ onNavigate = () => {} }) {
             backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
           }}>
             <div style={{ padding: "16px 20px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: "#c9d1d9", letterSpacing: 0.5 }}>Isolation Forest Telemetry (24h)</span>
-              <span style={{ fontSize: 11, color: "#6e7681", fontStyle: "italic" }}>Powered by TF-IDF vectorization & DBSCAN clustering geometry</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "#c9d1d9", letterSpacing: 0.5 }}>Isolation Forest Around Crash Time</span>
+              <span style={{ fontSize: 11, color: "#6e7681", fontStyle: "italic" }}>5-minute anomaly buckets centered on the latest detected crash window</span>
             </div>
             <div style={{ padding: "20px 10px 10px" }}>
               <ResponsiveContainer width="100%" height={240}>
@@ -319,7 +403,14 @@ export default function Dashboard({ onNavigate = () => {} }) {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#21262d" vertical={false} />
                   <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "#8b949e", fontFamily: "'Roboto Mono', monospace" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 11, fill: "#8b949e", fontFamily: "'Roboto Mono', monospace" }} tickLine={false} axisLine={false} />
+                  <YAxis
+                    domain={timelineDomain}
+                    tickFormatter={(value) => Number(value).toFixed(value < 1 ? 2 : 1)}
+                    tick={{ fontSize: 11, fill: "#8b949e", fontFamily: "'Roboto Mono', monospace" }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  {crashMarkerLabel ? <ReferenceLine x={crashMarkerLabel} stroke="#ff5f5f" strokeDasharray="4 4" /> : null}
                   <Tooltip content={<div style={{background: "#0d1117", border: "1px solid #30363d", padding: "8px", borderRadius: "6px", color: "#e6734b", fontFamily: "monospace"}}>Score Evaluated</div>} />
                   <Area type="monotone" dataKey="score" stroke="#e6734b" strokeWidth={2} fill="url(#scoreGrad)" dot={false} activeDot={{ r: 4, fill: "#e6734b" }} />
                 </AreaChart>

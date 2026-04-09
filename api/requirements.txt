@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-elasticsearch
+elasticsearch>=8,<9
 aiohttp
 python-dotenv
 python-jose[cryptography]

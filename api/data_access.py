@@ -9,6 +9,8 @@ ML_DIR = BASE_DIR.parent / "ml"
 COLLECTED_LOGS_DIR = ML_DIR / "collected_logs"
 SYSTEM_LOGS_FILE = COLLECTED_LOGS_DIR / "system_logs.json"
 ML_RESULTS_FILE = COLLECTED_LOGS_DIR / "ml_results.json"
+SYSTEM_LOGS_INDEX = "system-logs-*"
+ANOMALIES_INDEX = "log-anomalies"
 
 
 async def is_es_available(es: Optional[AsyncElasticsearch]) -> bool:

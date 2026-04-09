@@ -3,7 +3,14 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Request
 
-from data_access import get_local_anomalies, get_local_logs, get_local_summary, is_es_available
+from data_access import (
+    ANOMALIES_INDEX,
+    SYSTEM_LOGS_INDEX,
+    get_local_anomalies,
+    get_local_logs,
+    get_local_summary,
+    is_es_available,
+)
 
 router = APIRouter(prefix='/dashboard', tags=['dashboard'])
 
@@ -30,6 +37,66 @@ def split_timestamp(value: str | None) -> Dict[str, str]:
         }
     except ValueError:
         return {'date': '', 'time': ''}
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    normalized = str(value).replace('Z', '+00:00')
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def floor_to_bucket(value: datetime, minutes: int) -> datetime:
+    bucket_minute = (value.minute // minutes) * minutes
+    return value.replace(minute=bucket_minute, second=0, microsecond=0)
+
+
+def pick_matching_anomaly(
+    crash_source: Dict[str, Any],
+    anomalies: List[Dict[str, Any]],
+) -> Dict[str, Any] | None:
+    crash_time = parse_timestamp(crash_source.get('@timestamp') or crash_source.get('time'))
+    if crash_time is None:
+        return None
+
+    crash_message = str(crash_source.get('message') or '')
+    best_match: Dict[str, Any] | None = None
+    best_distance: float | None = None
+
+    for anomaly in anomalies:
+        anomaly_time = parse_timestamp(anomaly.get('@timestamp') or anomaly.get('time'))
+        if anomaly_time is None:
+            continue
+
+        distance = abs((anomaly_time - crash_time).total_seconds())
+        if distance > 120:
+            continue
+
+        anomaly_message = str(anomaly.get('message') or '')
+        message_matches = (
+            crash_message and anomaly_message and (
+                crash_message == anomaly_message
+                or crash_message in anomaly_message
+                or anomaly_message in crash_message
+            )
+        )
+
+        if not message_matches and distance > 5:
+            continue
+
+        if best_match is None or best_distance is None or distance < best_distance:
+            best_match = anomaly
+            best_distance = distance
+
+    return best_match
 
 
 def rootcause_empty_state(description: str, fix: str) -> Dict[str, Any]:
@@ -77,15 +144,15 @@ async def get_dashboard_stats(request: Request) -> Dict[str, Any]:
 
     try:
         crash_count_response = await es.count(
-            index='logs-*',
+            index=SYSTEM_LOGS_INDEX,
             body={'query': {'term': {'level.keyword': 'ERROR'}}},
         )
         anomaly_count_response = await es.count(
-            index='logs-*',
-            body={'query': {'range': {'score': {'lt': -0.05}}}},
+            index=ANOMALIES_INDEX,
+            body={'query': {'match_all': {}}},
         )
         last_crash_response = await es.search(
-            index='logs-*',
+            index=SYSTEM_LOGS_INDEX,
             body={
                 'size': 1,
                 'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
@@ -93,11 +160,11 @@ async def get_dashboard_stats(request: Request) -> Dict[str, Any]:
             },
         )
         root_cause_response = await es.search(
-            index='logs-*',
+            index=ANOMALIES_INDEX,
             body={
                 'size': 1,
                 'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
-                'query': {'term': {'isRootCause': True}},
+                'query': {'term': {'is_root_cause': True}},
             },
         )
 
@@ -123,12 +190,28 @@ async def get_dashboard_stats(request: Request) -> Dict[str, Any]:
 @router.get('/timeline')
 async def get_dashboard_timeline(request: Request) -> List[Dict[str, Any]]:
     es = getattr(request.app.state, 'es', None)
+    window_minutes = 60
+    bucket_minutes = 5
+
     if not await is_es_available(es):
+        logs = get_local_logs()
         anomalies = get_local_anomalies()
-        now = datetime.now(timezone.utc)
+        crash_logs = [
+            item for item in logs
+            if str(item.get('level', '')).upper() == 'ERROR'
+        ]
+        crash_time = parse_timestamp(
+            (crash_logs[0] if crash_logs else {}).get('@timestamp')
+            or (crash_logs[0] if crash_logs else {}).get('time')
+        )
+        if crash_time is None:
+            crash_time = datetime.now(timezone.utc)
+
+        start = crash_time - timedelta(minutes=window_minutes)
+        end = crash_time + timedelta(minutes=window_minutes)
         timeline_map = {
-            (now - timedelta(hours=offset)).replace(minute=0, second=0, microsecond=0): []
-            for offset in range(24)
+            start + timedelta(minutes=offset * bucket_minutes): []
+            for offset in range(int(((end - start).total_seconds() // 60) / bucket_minutes) + 1)
         }
         for item in anomalies:
             raw_time = item.get('@timestamp') or item.get('time')
@@ -140,26 +223,43 @@ async def get_dashboard_timeline(request: Request) -> List[Dict[str, Any]]:
                 continue
             if event_time.tzinfo is None:
                 event_time = event_time.replace(tzinfo=timezone.utc)
-            bucket = event_time.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            event_time = event_time.astimezone(timezone.utc)
+            if event_time < start or event_time > end:
+                continue
+            bucket = floor_to_bucket(event_time, bucket_minutes)
             if bucket in timeline_map:
                 timeline_map[bucket].append(float(item.get('score', item.get('anomaly_score', 0)) or 0))
 
         timeline: List[Dict[str, Any]] = []
         for bucket in sorted(timeline_map.keys()):
             values = timeline_map[bucket]
-            score = sum(values) / len(values) if values else 0
+            score = min(values) if values else 0
             timeline.append({'hour': bucket.isoformat(), 'score': score})
         return timeline
 
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(hours=24)
+    crash_response = await es.search(
+        index=SYSTEM_LOGS_INDEX,
+        body={
+            'size': 1,
+            'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
+            'query': {'term': {'level.keyword': 'ERROR'}},
+        },
+    )
+    crash_hits = crash_response.get('hits', {}).get('hits', [])
+    crash_source = (crash_hits[0] if crash_hits else {}).get('_source', {})
+    crash_time = parse_timestamp(crash_source.get('@timestamp') or crash_source.get('time'))
+    if crash_time is None:
+        crash_time = datetime.now(timezone.utc)
+
+    start = crash_time - timedelta(minutes=window_minutes)
+    end = crash_time + timedelta(minutes=window_minutes)
     body = {
         'size': 0,
         'query': {
             'bool': {
                 'filter': [
-                    {'range': {'@timestamp': {'gte': start.isoformat(), 'lte': now.isoformat()}}},
-                    {'range': {'score': {'lt': -0.05}}},
+                    {'range': {'@timestamp': {'gte': start.isoformat(), 'lte': end.isoformat()}}},
+                    {'match_all': {}},
                 ]
             }
         },
@@ -167,26 +267,26 @@ async def get_dashboard_timeline(request: Request) -> List[Dict[str, Any]]:
             'scores_by_hour': {
                 'date_histogram': {
                     'field': '@timestamp',
-                    'calendar_interval': 'hour',
+                    'fixed_interval': f'{bucket_minutes}m',
                     'min_doc_count': 0,
                     'extended_bounds': {
                         'min': start.isoformat(),
-                        'max': now.isoformat(),
+                        'max': end.isoformat(),
                     },
                 },
                 'aggs': {
-                    'avg_score': {'avg': {'field': 'score'}},
+                    'worst_score': {'min': {'field': 'anomaly_score'}},
                 },
             }
         },
     }
 
     try:
-        response = await es.search(index='logs-*', body=body)
+        response = await es.search(index=ANOMALIES_INDEX, body=body)
         buckets = response.get('aggregations', {}).get('scores_by_hour', {}).get('buckets', [])
         timeline: List[Dict[str, Any]] = []
         for bucket in buckets:
-            value = bucket.get('avg_score', {}).get('value')
+            value = bucket.get('worst_score', {}).get('value')
             hour = bucket.get('key_as_string', '')
             timeline.append({'hour': hour, 'score': 0 if value is None else value})
         return timeline
@@ -226,19 +326,39 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
     }
 
     try:
-        response = await es.search(index='logs-*', body=body)
+        response = await es.search(index=SYSTEM_LOGS_INDEX, body=body)
         hits = response.get('hits', {}).get('hits', [])
+        anomaly_response = await es.search(
+            index=ANOMALIES_INDEX,
+            body={
+                'size': 500,
+                'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
+                'query': {'match_all': {}},
+            },
+        )
+        anomaly_hits = [item.get('_source', {}) for item in anomaly_response.get('hits', {}).get('hits', [])]
         crashes: List[Dict[str, Any]] = []
         for hit in hits:
             source = hit.get('_source', {})
+            matching_anomaly = pick_matching_anomaly(source, anomaly_hits)
             when = split_timestamp(source.get('@timestamp') or source.get('time'))
             crashes.append(
                 {
                     'date': when['date'],
                     'time': when['time'],
-                    'rootCause': source.get('rootCause') or source.get('message') or '',
-                    'anomalies': source.get('anomalies', 0),
-                    'score': source.get('score', 0),
+                    'rootCause': (
+                        (matching_anomaly or {}).get('rootCause')
+                        or (matching_anomaly or {}).get('message')
+                        or source.get('rootCause')
+                        or source.get('message')
+                        or ''
+                    ),
+                    'anomalies': 1 if matching_anomaly else source.get('anomalies', 0),
+                    'score': (
+                        (matching_anomaly or {}).get('anomaly_score')
+                        if matching_anomaly is not None
+                        else source.get('anomaly_score', source.get('score', 0))
+                    ),
                 }
             )
         return crashes
@@ -304,11 +424,11 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
         # Fetch anomalies with scores < -0.05 (anomalous events)
         body = {
             'size': 100,
-            'sort': [{'score': {'order': 'asc'}}],
-            'query': {'range': {'score': {'lt': -0.05}}},
+            'sort': [{'anomaly_score': {'order': 'asc'}}],
+            'query': {'match_all': {}},
         }
 
-        response = await es.search(index='logs-*', body=body)
+        response = await es.search(index=ANOMALIES_INDEX, body=body)
         hits = response.get('hits', {}).get('hits', [])
 
         if not hits:
@@ -321,7 +441,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
         clusters: Dict[int, List[Dict[str, Any]]] = {}
         for hit in hits:
             source = hit.get('_source', {})
-            cluster_id = int(source.get('cluster', 0)) or 0
+            cluster_id = int(source.get('cluster_id', source.get('cluster', 0)) or 0)
             if cluster_id not in clusters:
                 clusters[cluster_id] = []
             clusters[cluster_id].append(source)
@@ -332,7 +452,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
         best_avg_score = 0
 
         for cluster_id, events in clusters.items():
-            avg_score = sum(e.get('score', 0) for e in events) / len(events)
+            avg_score = sum(float(e.get('anomaly_score', e.get('score', 0)) or 0) for e in events) / len(events)
             if best_cluster_id is None or avg_score < best_avg_score:
                 best_cluster_id = cluster_id
                 best_cluster_data = events
@@ -345,15 +465,15 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
             )
 
         # Build event list
-        top_score = min(e.get('score', 0) for e in best_cluster_data)
+        top_score = min(float(e.get('anomaly_score', e.get('score', 0)) or 0) for e in best_cluster_data)
         events = []
         for i, event in enumerate(best_cluster_data[:10]):  # Top 10 events from cluster
             events.append({
                 'time': event.get('@timestamp') or event.get('time') or '',
                 'eventId': str(i + 1),
-                'source': 'Root cause' if event.get('isRootCause') else 'Backend log',
+                'source': 'Root cause' if event.get('is_root_cause', event.get('isRootCause')) else 'Backend log',
                 'message': event.get('message') or event.get('log') or '',
-                'score': float(event.get('score', 0)),
+                'score': float(event.get('anomaly_score', event.get('score', 0)) or 0),
             })
 
         # Calculate confidence based on anomaly count and score

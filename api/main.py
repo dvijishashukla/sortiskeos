@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
+from auth import APIKeyMiddleware, PipelineRateLimitMiddleware
 from data_access import is_es_available
 from routes.anomalies import router as anomalies_router
 from routes.dashboard import router as dashboard_router
@@ -18,11 +19,18 @@ API_ENV_PATH = BASE_DIR / '.env'
 load_dotenv(dotenv_path=API_ENV_PATH)
 
 ES_HOST = os.getenv('ES_HOST', 'http://localhost:9200')
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000').split(',')
+    if origin.strip()
+]
 
 app = FastAPI(title='Sortiskeos API')
+app.add_middleware(PipelineRateLimitMiddleware)
+app.add_middleware(APIKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['http://localhost:3000'],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],

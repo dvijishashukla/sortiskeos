@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Query, Request
 
-from data_access import get_local_logs, is_es_available
+from data_access import SYSTEM_LOGS_INDEX, get_local_logs, is_es_available
 
 router = APIRouter(tags=['logs'])
 
@@ -79,7 +79,7 @@ async def get_logs(
     }
 
     try:
-        response = await es.search(index='logs-*', body=body)
+        response = await es.search(index=SYSTEM_LOGS_INDEX, body=body)
         hits = response.get('hits', {}).get('hits', [])
         if hits:
             return [format_log(hit) for hit in hits]

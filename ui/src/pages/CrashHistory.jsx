@@ -51,18 +51,27 @@ export default function CrashHistory() {
                 boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
                 animation: "fadeSlideUp 0.5s ease both",
               }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-                  <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 20, marginBottom: 16 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <h3 style={{ fontSize: 16, fontWeight: 600, color: "#ff5f5f", margin: "0 0 6px 0", letterSpacing: "0.3px" }}>
                       Automated Root Cause
                     </h3>
-                    <div style={{ color: "#8b949e", fontSize: 13, lineHeight: 1.4 }}>
+                    <div style={{
+                      color: "#8b949e",
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-word",
+                      maxWidth: "100%",
+                    }}>
                       {c.rootCause || "Unknown Application Failure"}
                     </div>
                   </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 24, fontWeight: 600, color: "#e6edf3" }}>{c.score ? c.score.toFixed(1) : "N/A"}</div>
-                    <div style={{ fontSize: 10, color: "#3a4a5a", textTransform: "uppercase", letterSpacing: 1 }}>Anomaly Score</div>
+                  <div style={{ textAlign: "right", flexShrink: 0, minWidth: 72 }}>
+                    <div style={{ fontSize: 24, fontWeight: 600, color: "#e6edf3", whiteSpace: "nowrap" }}>
+                      {Number.isFinite(c.score) ? c.score.toFixed(1) : "N/A"}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#3a4a5a", textTransform: "uppercase", letterSpacing: 1, whiteSpace: "nowrap" }}>Anomaly Score</div>
                   </div>
                 </div>
 
