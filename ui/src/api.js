@@ -129,3 +129,31 @@ export async function checkHealth() {
     return null;
   }
 }
+
+/**
+ * Fetch last 100 audit log entries (newest first)
+ * Returns: [ { timestamp, action, detail, hash }, ... ]
+ */
+export async function fetchAuditLog() {
+  try {
+    const response = await fetch(`${BASE}/audit/log`);
+    if (!response.ok) return [];
+    return response.json();
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
+ * Verify the integrity of the audit log chain
+ * Returns: { valid: bool, broken_at: number | null }
+ */
+export async function verifyAuditLog() {
+  try {
+    const response = await fetch(`${BASE}/audit/verify`);
+    if (!response.ok) return null;
+    return response.json();
+  } catch (error) {
+    return null;
+  }
+}

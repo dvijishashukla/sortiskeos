@@ -43,9 +43,9 @@ function formatAnomalies(items) {
 }
 
 const LEVEL_STYLE = {
-  ERROR: { bg: "rgba(255,59,59,0.12)", text: "#ff5f5f", dot: "#ff3b3b" },
-  WARN: { bg: "rgba(255,180,0,0.12)", text: "#ffbb33", dot: "#ffaa00" },
-  INFO: { bg: "rgba(0,210,255,0.10)", text: "#33ddff", dot: "#00c8f0" },
+  ERROR: { bg: "rgba(239, 68, 68, 0.12)", text: "#ef4444", dot: "#ef4444" },
+  WARN: { bg: "rgba(245, 158, 11, 0.12)", text: "#f59e0b", dot: "#f59e0b" },
+  INFO: { bg: "rgba(59, 130, 246, 0.10)", text: "#3b82f6", dot: "#3b82f6" },
 };
 
 function LevelBadge({ level }) {
@@ -85,12 +85,12 @@ function CustomScatterTooltip({ active, payload }) {
   const d = payload[0].payload;
   return (
     <div style={{
-      background: "#0d1117", border: "1px solid #30363d",
+      background: "#0d0d14", border: "1px solid #1e1e2e",
       borderRadius: 6, padding: "8px 14px", fontSize: 11,
     }}>
-      <div style={{ color: "#8b949e" }}>Log #{d.x} - Cluster {d.cluster || "N/A"}</div>
-      <div style={{ color: CLUSTER_COLORS[d.cluster] || "#c9d1d9", fontFamily: "monospace", marginTop: 2 }}>score: -{d.y.toFixed(3)}</div>
-      <div style={{ color: "#c9d1d9", marginTop: 2 }}>{d.label}</div>
+      <div style={{ color: "#64748b" }}>Log #{d.x} - Cluster {d.cluster || "N/A"}</div>
+      <div style={{ color: CLUSTER_COLORS[d.cluster] || "#e2e8f0", fontFamily: "monospace", marginTop: 2 }}>score: -{d.y.toFixed(3)}</div>
+      <div style={{ color: "#e2e8f0", marginTop: 2 }}>{d.label}</div>
     </div>
   );
 }
@@ -159,36 +159,36 @@ export default function AnomaliesDetail({ onBack }) {
             fontFamily: "'Roboto', sans-serif", display: "flex", alignItems: "center", gap: 6,
           }}>Back</button>
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 600, color: "#e6edf3", fontFamily: "'Roboto', sans-serif", letterSpacing: "-0.5px" }}>
+            <h1 style={{ fontSize: 22, fontWeight: 600, color: "#e2e8f0", fontFamily: "'Roboto', sans-serif", letterSpacing: "-0.5px" }}>
               Anomaly Deep Dive
             </h1>
-            <div style={{ fontSize: 11, color: "#6e7681", marginTop: 2, letterSpacing: 1 }}>
-              {anomalies.length} ANOMALIES � {usingFallback ? "FALLBACK DATA" : "FASTAPI DATA"}
+            <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, letterSpacing: 1 }}>
+              {anomalies.length} ANOMALIES  {usingFallback ? "FALLBACK DATA" : "FASTAPI DATA"}
             </div>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", gap: 12 }}>
             {byCluster.map((c) => (
               <div key={c.id} style={{
-                background: "rgba(22, 27, 34, 0.4)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
-                border: `1px solid ${(CLUSTER_COLORS[c.id] || "#6e7681")}33`,
-                borderRadius: 8, padding: "8px 16px", textAlign: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                background: "rgba(15, 23, 42, 0.6)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+                border: `1px solid ${(CLUSTER_COLORS[c.id] || "#64748b")}33`,
+                borderRadius: 8, padding: "8px 16px", textAlign: "center", boxShadow: "0 0 12px #7c3aed18",
               }}>
                 <div style={{ fontSize: 18, fontWeight: 600, color: CLUSTER_COLORS[c.id], fontFamily: "'Roboto', sans-serif" }}>{c.count}</div>
-                <div style={{ fontSize: 9, color: "#6e7681", letterSpacing: "1px", fontWeight: 600, textTransform: "uppercase" }}>Cluster {c.id}</div>
+                <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "1px", fontWeight: 600, textTransform: "uppercase" }}>Cluster {c.id}</div>
               </div>
             ))}
           </div>
         </div>
 
         <div style={{
-          background: "rgba(22, 27, 34, 0.4)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
-          border: "1px solid rgba(255,255,255,0.05)",
+          background: "rgba(19, 19, 31, 0.4)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+          border: "1px solid #1e1e2e",
           borderRadius: 12, padding: "20px 16px 12px", marginBottom: 20,
           animation: "fadeUp 0.4s ease 0.06s both",
           boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
         }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, padding: "0 4px" }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#c9d1d9", letterSpacing: 0.3 }}>Anomaly Score Distribution</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", letterSpacing: 0.3 }}>Anomaly Score Distribution</span>
             <div style={{ display: "flex", gap: 16 }}>
               {Object.entries(CLUSTER_COLORS).map(([c, col]) => (
                 <span key={c} style={{ fontSize: 11, color: col, display: "flex", alignItems: "center", gap: 5 }}>
@@ -200,10 +200,10 @@ export default function AnomaliesDetail({ onBack }) {
           </div>
           <ResponsiveContainer width="100%" height={160}>
             <ScatterChart margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1a2030" />
-              <XAxis dataKey="x" type="number" tick={{ fontSize: 10, fill: "#484f58", fontFamily: "monospace" }} tickLine={false} axisLine={false} label={{ value: "log index", position: "insideBottom", offset: -2, fontSize: 10, fill: "#3a4a5a" }} />
-              <YAxis dataKey="y" type="number" tick={{ fontSize: 10, fill: "#484f58", fontFamily: "monospace" }} tickLine={false} axisLine={false} />
-              <ReferenceLine y={0.05} stroke="#e6734b" strokeDasharray="4 4" strokeOpacity={0.5} label={{ value: "threshold", position: "right", fontSize: 10, fill: "#e6734b" }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e1e2e" />
+              <XAxis dataKey="x" type="number" tick={{ fontSize: 10, fill: "#64748b", fontFamily: "monospace" }} tickLine={false} axisLine={false} label={{ value: "log index", position: "insideBottom", offset: -2, fontSize: 10, fill: "#64748b" }} />
+              <YAxis dataKey="y" type="number" tick={{ fontSize: 10, fill: "#64748b", fontFamily: "monospace" }} tickLine={false} axisLine={false} />
+              <ReferenceLine y={0.05} stroke="#7c3aed" strokeDasharray="4 4" strokeOpacity={0.5} label={{ value: "threshold", position: "right", fontSize: 10, fill: "#7c3aed" }} />
               <Tooltip content={<CustomScatterTooltip />} />
               <Scatter data={scatterData} shape={<CustomDot />} />
             </ScatterChart>
@@ -216,19 +216,19 @@ export default function AnomaliesDetail({ onBack }) {
         }}>
           {["ALL","ERROR","WARN","INFO"].map((l) => (
             <button key={l} onClick={() => setFilter(l)} style={{
-              background: filter === l ? "#21262d" : "transparent",
-              border: `1px solid ${filter === l ? "#e6734b44" : "#21262d"}`,
-              color: filter === l ? "#e6edf3" : "#6e7681",
+              background: filter === l ? "#1e1e2e" : "transparent",
+              border: `1px solid ${filter === l ? "#7c3aed44" : "#1e1e2e"}`,
+              color: filter === l ? "#e2e8f0" : "#64748b",
               borderRadius: 6, padding: "5px 14px", cursor: "pointer",
               fontSize: 11, fontFamily: "monospace", letterSpacing: 1,
             }}>{l}</button>
           ))}
-          <div style={{ width: 1, background: "#21262d", margin: "0 4px" }} />
+          <div style={{ width: 1, background: "#1e1e2e", margin: "0 4px" }} />
           {["ALL","1","2","3"].map((c) => (
             <button key={c} className="action-btn" onClick={() => setClusterFilter(c)} style={{
-              background: clusterFilter === c ? "rgba(22, 27, 34, 0.6)" : "transparent",
-              border: `1px solid ${clusterFilter === c ? (CLUSTER_COLORS[c] || "#e6734b") + "44" : "rgba(255,255,255,0.05)"}`,
-              color: clusterFilter === c ? (CLUSTER_COLORS[c] || "#e6edf3") : "#6e7681",
+              background: clusterFilter === c ? "rgba(19, 19, 31, 0.6)" : "transparent",
+              border: `1px solid ${clusterFilter === c ? (CLUSTER_COLORS[c] || "#7c3aed") + "44" : "#1e1e2e"}`,
+              color: clusterFilter === c ? (CLUSTER_COLORS[c] || "#e2e8f0") : "#64748b",
               borderRadius: 6, padding: "5px 14px", cursor: "pointer",
               fontSize: 11, fontFamily: "monospace", letterSpacing: 1,
             }}>{c === "ALL" ? "ALL CLUSTERS" : `C${c}`}</button>
@@ -238,14 +238,14 @@ export default function AnomaliesDetail({ onBack }) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{
-              marginLeft: "auto", background: "rgba(13, 17, 23, 0.5)", border: "1px solid rgba(255,255,255,0.05)",
-              color: "#c9d1d9", borderRadius: 6, padding: "5px 14px",
+              marginLeft: "auto", background: "rgba(13, 13, 20, 0.5)", border: "1px solid #1e1e2e",
+              color: "#e2e8f0", borderRadius: 6, padding: "5px 14px",
               fontSize: 12, width: 220, outline: "none",
             }}
           />
           <select value={sort} onChange={(e) => setSort(e.target.value)} style={{
-            background: "rgba(13, 17, 23, 0.5)", border: "1px solid rgba(255,255,255,0.05)",
-            color: "#c9d1d9", borderRadius: 6, padding: "5px 10px",
+            background: "rgba(13, 13, 20, 0.5)", border: "1px solid #1e1e2e",
+            color: "#e2e8f0", borderRadius: 6, padding: "5px 10px",
             fontSize: 12, cursor: "pointer", outline: "none",
           }}>
             <option value="score">Sort: Score</option>
@@ -254,34 +254,34 @@ export default function AnomaliesDetail({ onBack }) {
         </div>
 
         <div style={{
-          background: "rgba(22, 27, 34, 0.3)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
-          border: "1px solid rgba(255,255,255,0.03)",
+          background: "rgba(19, 19, 31, 0.3)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+          border: "1px solid #1e1e2e",
           borderRadius: 12, overflow: "hidden",
           animation: "fadeUp 0.4s ease 0.14s both",
-          boxShadow: "0 4px 24px rgba(0,0,0,0.1)",
+          boxShadow: "0 0 12px #7c3aed18",
           opacity: isLoading ? 0.4 : 1,
           transition: "opacity 0.3s",
           pointerEvents: isLoading ? "none" : "auto",
         }}>
           <table style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
-              <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.05)", background: "rgba(13, 17, 23, 0.3)" }}>
+              <tr style={{ borderBottom: "1px solid #1e1e2e", background: "rgba(13, 13, 20, 0.3)" }}>
                 {["#","TIME","LEVEL","SOURCE","MESSAGE","SCORE","CLUSTER","METHOD"].map((h) => (
-                  <th key={h} style={{ padding: "14px 16px", fontSize: 10, color: "#6e7681", letterSpacing: "1.2px", textTransform: "uppercase", textAlign: "left", fontWeight: 500 }}>{h}</th>
+                  <th key={h} style={{ padding: "14px 16px", fontSize: 10, color: "#64748b", letterSpacing: "1.2px", textTransform: "uppercase", textAlign: "left", fontWeight: 500 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {filtered.map((a, i) => (
                 <tr key={a.id} className="table-row" style={{
-                  borderBottom: "1px solid rgba(255,255,255,0.03)",
+                  borderBottom: "1px solid #1e1e2e",
                   animation: `fadeUp 0.35s ease ${i * 0.03}s both`,
                 }}>
-                  <td style={{ padding: "12px 16px", fontFamily: "monospace", fontSize: 11, color: "#3a4a5a" }}>{a.id}</td>
-                  <td style={{ padding: "12px 16px", fontFamily: "monospace", fontSize: 11, color: "#6e7681", whiteSpace: "nowrap" }}>{a.time}</td>
+                  <td style={{ padding: "12px 16px", fontFamily: "monospace", fontSize: 11, color: "#64748b" }}>{a.id}</td>
+                  <td style={{ padding: "12px 16px", fontFamily: "monospace", fontSize: 11, color: "#64748b", whiteSpace: "nowrap" }}>{a.time}</td>
                   <td style={{ padding: "12px 16px" }}><LevelBadge level={a.level} /></td>
-                  <td style={{ padding: "12px 16px", fontSize: 11, color: "#8b949e", fontFamily: "monospace", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.source}</td>
-                  <td style={{ padding: "12px 16px", fontSize: 12, color: "#c9d1d9", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.message}</td>
+                  <td style={{ padding: "12px 16px", fontSize: 11, color: "#64748b", fontFamily: "monospace", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.source}</td>
+                  <td style={{ padding: "12px 16px", fontSize: 12, color: "#e2e8f0", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.message}</td>
                   <td style={{ padding: "12px 16px" }}>
                     <span style={{
                       fontFamily: "monospace", fontSize: 11,
@@ -291,17 +291,17 @@ export default function AnomaliesDetail({ onBack }) {
                   <td style={{ padding: "12px 16px" }}>
                     <span style={{
                       width: 8, height: 8, borderRadius: "50%",
-                      background: CLUSTER_COLORS[a.cluster] || "#6e7681",
+                      background: CLUSTER_COLORS[a.cluster] || "#64748b",
                       display: "inline-block", marginRight: 8,
-                      boxShadow: `0 0 8px ${(CLUSTER_COLORS[a.cluster] || "#6e7681")}66`,
+                      boxShadow: `0 0 8px ${(CLUSTER_COLORS[a.cluster] || "#64748b")}66`,
                     }} />
-                    <span style={{ fontFamily: "monospace", fontSize: 11, color: CLUSTER_COLORS[a.cluster] || "#6e7681" }}>C{a.cluster || "-"}</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 11, color: CLUSTER_COLORS[a.cluster] || "#64748b" }}>C{a.cluster || "-"}</span>
                   </td>
                   <td style={{ padding: "12px 16px" }}><MethodTag method={a.method} /></td>
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={8} style={{ padding: 28, textAlign: "center", color: "#484f58", fontSize: 13 }}>No anomalies match filters</td></tr>
+                <tr><td colSpan={8} style={{ padding: 28, textAlign: "center", color: "#64748b", fontSize: 13 }}>No anomalies match filters</td></tr>
               )}
             </tbody>
           </table>

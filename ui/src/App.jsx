@@ -5,6 +5,7 @@ import AnomaliesDetail from "./pages/AnomaliesDetail";
 import CrashHistory from "./pages/CrashHistory";
 import RawLogs from "./pages/RawLogs";
 import Settings from "./pages/Settings";
+import AuditLog from "./pages/AuditLog";
 import { checkHealth } from "./api.js";
 import { useEffect } from "react";
 
@@ -22,6 +23,7 @@ const NAV = [
   { id: "rootcause",  icon: "⊕", label: "Root Cause",     sub: "Cluster analysis" },
   { id: "crashes",    icon: "⚡", label: "Crash History",  sub: "All events" },
   { id: "logs",       icon: "≡", label: "Raw Logs",       sub: "Log stream" },
+  { id: "audit",      icon: "⊛", label: "Audit Log",     sub: "Security ledger" },
   { id: "settings",   icon: "◎", label: "Settings",       sub: "Config" },
 ];
 
@@ -30,10 +32,10 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
     <aside style={{
       width: collapsed ? 64 : 220,
       minHeight: "100vh",
-      background: "rgba(13, 17, 23, 0.75)",
+      background: "rgba(19, 19, 31, 0.75)",
       backdropFilter: "blur(12px)",
       WebkitBackdropFilter: "blur(12px)",
-      borderRight: "1px solid rgba(255,255,255,0.05)",
+      borderRight: "1px solid #1e1e2e",
       display: "flex",
       flexDirection: "column",
       transition: "width 0.25s cubic-bezier(.4,0,.2,1)",
@@ -44,30 +46,32 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
     }}>
       {/* Logo */}
       <div style={{
-        padding: collapsed ? "22px 0" : "22px 20px",
-        borderBottom: "1px solid #1a2030",
+        height: 72,
+        padding: collapsed ? "0" : "0 20px",
+        borderBottom: "1px solid #1e1e2e",
         display: "flex", alignItems: "center",
         justifyContent: collapsed ? "center" : "space-between",
         gap: 10,
+        boxSizing: "border-box",
       }}>
         {!collapsed && (
-          <div>
-            <div style={{ fontSize: 13, fontFamily: "'Roboto', sans-serif", fontWeight: 900, color: "#e6edf3", letterSpacing: 1 }}>SORTISKEOS</div>
-            <div style={{ fontSize: 9, color: "#3a4a5a", letterSpacing: 3, textTransform: "uppercase", marginTop: 2 }}>Log Analysis</div>
+          <div style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ fontSize: 15, fontFamily: "'Roboto', sans-serif", fontWeight: 900, color: "#e2e8f0", letterSpacing: 1.5 }}>SORTISKEOS</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: 3, textTransform: "uppercase", marginTop: 2, fontWeight: 500 }}>Log Analysis</div>
           </div>
         )}
         {collapsed && (
           <div style={{
-            width: 30, height: 30, borderRadius: 8,
-            background: "linear-gradient(135deg,#e6734b,#c0392b)",
+            width: 32, height: 32, borderRadius: 8,
+            background: "linear-gradient(135deg,#7c3aed,#4c1d95)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 14, boxShadow: "0 0 14px rgba(230,115,75,0.3)",
+            fontSize: 16, boxShadow: "0 0 14px rgba(124,58,237,0.3)",
           }}>⚡</div>
         )}
         {!collapsed && (
           <button onClick={() => setCollapsed(true)} style={{
             background: "none", border: "none", cursor: "pointer",
-            color: "#3a4a5a", fontSize: 16, padding: 4,
+            color: "#64748b", fontSize: 20, padding: 4,
             display: "flex", alignItems: "center",
           }}>‹</button>
         )}
@@ -77,9 +81,9 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
       {collapsed && (
         <button onClick={() => setCollapsed(false)} style={{
           background: "none", border: "none", cursor: "pointer",
-          color: "#3a4a5a", fontSize: 14, padding: "10px 0",
+          color: "#64748b", fontSize: 14, padding: "10px 0",
           display: "flex", alignItems: "center", justifyContent: "center",
-          borderBottom: "1px solid #1a2030",
+          borderBottom: "1px solid #1e1e2e",
         }}>›</button>
       )}
 
@@ -99,8 +103,8 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
                 display: "flex", alignItems: "center",
                 gap: 12,
                 justifyContent: collapsed ? "center" : "flex-start",
-                borderLeft: isActive ? "2px solid #e6734b" : "2px solid transparent",
-                background: isActive ? "rgba(230,115,75,0.07)" : "transparent",
+                borderLeft: isActive ? "2px solid #7c3aed" : "2px solid transparent",
+                background: isActive ? "rgba(124,58,237,0.1)" : "transparent",
                 transition: "all 0.2s ease",
                 position: "relative",
               }}
@@ -115,14 +119,14 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
             >
               <span style={{
                 fontSize: 16,
-                color: isActive ? "#e6734b" : "#4a5568",
+                color: isActive ? "#7c3aed" : "#64748b",
                 transition: "color 0.15s",
                 minWidth: 20, textAlign: "center",
               }}>{item.icon}</span>
               {!collapsed && (
                 <div style={{ textAlign: "left" }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: isActive ? "#e6edf3" : "#6e7681", fontFamily: "'Roboto', sans-serif", letterSpacing: 0.5 }}>{item.label}</div>
-                  <div style={{ fontSize: 10, color: isActive ? "#4a5568" : "#2d3748", marginTop: 1, letterSpacing: 0.2 }}>{item.sub}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: isActive ? "#e2e8f0" : "#64748b", fontFamily: "'Roboto', sans-serif", letterSpacing: 0.5 }}>{item.label}</div>
+                  <div style={{ fontSize: 10, color: isActive ? "#64748b" : "#1e1e2e", marginTop: 1, letterSpacing: 0.2 }}>{item.sub}</div>
                 </div>
               )}
             </button>
@@ -134,8 +138,8 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
       {!collapsed && (
         <div style={{
           padding: "16px 20px",
-          borderTop: "1px solid rgba(255,255,255,0.05)",
-          fontSize: 10, color: "#2d3748",
+          borderTop: "1px solid #1e1e2e",
+          fontSize: 10, color: "#64748b",
           letterSpacing: 1,
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
@@ -154,7 +158,7 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
         </div>
       )}
       {collapsed && (
-        <div style={{ padding: "14px 0", display: "flex", justifyContent: "center", borderTop: "1px solid #1a2030" }}>
+        <div style={{ padding: "14px 0", display: "flex", justifyContent: "center", borderTop: "1px solid #1e1e2e" }}>
           <span style={{
             width: 7, height: 7, borderRadius: "50%",
             background: health?.elasticsearch ? "#3fb950" : "#f59e0b",
@@ -172,11 +176,11 @@ function PlaceholderPage({ title, icon }) {
   return (
     <div style={{
       display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      minHeight: "70vh", gap: 16, color: "#3a4a5a",
+      minHeight: "70vh", gap: 16, color: "#64748b",
     }}>
       <div style={{ fontSize: 48 }}>{icon}</div>
-      <div style={{ fontSize: 20, fontFamily: "'Roboto', sans-serif", fontWeight: 700, color: "#4a5568" }}>{title}</div>
-      <div style={{ fontSize: 13, color: "#2d3748" }}>Connect to FastAPI backend to load data</div>
+      <div style={{ fontSize: 20, fontFamily: "'Roboto', sans-serif", fontWeight: 700, color: "#e2e8f0" }}>{title}</div>
+      <div style={{ fontSize: 13, color: "#64748b" }}>Connect to FastAPI backend to load data</div>
     </div>
   );
 }
@@ -213,6 +217,7 @@ export default function App() {
       case "crashes":     return <CrashHistory />;
       case "logs":        return <RawLogs />;
       case "settings":    return <Settings />;
+      case "audit":       return <AuditLog />;
       default:            return <Dashboard onNavigate={navigate} />;
     }
   };
@@ -223,8 +228,8 @@ export default function App() {
         @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700;900&family=Roboto+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
-          background: #0d1117; 
-          color: #e6edf3; 
+          background: #0d0d14; 
+          color: #e2e8f0; 
           font-family: 'Roboto', sans-serif;
           -webkit-font-smoothing: antialiased;
           -moz-osx-font-smoothing: grayscale;
@@ -234,18 +239,18 @@ export default function App() {
         /* Natural Scrollbar */
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 10px; transition: background 0.3s; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+        ::-webkit-scrollbar-thumb { background: rgba(124,58,237,0.1); border-radius: 10px; transition: background 0.3s; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(124,58,237,0.2); }
         
         .stat-card { 
           transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1); 
-          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+          box-shadow: 0 0 12px #7c3aed18;
         }
         .stat-card:hover { 
           transform: translateY(-4px); 
-          box-shadow: 0 12px 32px rgba(0,0,0,0.2) !important; 
+          box-shadow: 0 12px 32px rgba(124,58,237,0.2) !important; 
           cursor: default; 
-          border-color: rgba(255,255,255,0.1) !important;
+          border-color: #7c3aed44 !important;
         }
         
         .table-row { transition: background 0.2s ease; }
@@ -300,5 +305,30 @@ export default function App() {
         </main>
       </div>
     </>
+  );
+}
+
+export function Toast({ message, type, onClose }) {
+  useEffect(() => {
+    const t = setTimeout(onClose, 3000);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <div style={{
+      position: 'fixed',
+      bottom: 24,
+      right: 24,
+      background: type === 'success' 
+        ? '#22c55e' : '#ef4444',
+      color: 'white',
+      padding: '12px 20px',
+      borderRadius: '8px',
+      fontSize: '14px',
+      zIndex: 9999,
+      boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+      animation: 'fadeSlideUp 0.3s ease'
+    }}>
+      {message}
+    </div>
   );
 }

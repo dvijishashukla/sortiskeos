@@ -140,6 +140,8 @@ async def get_dashboard_stats(request: Request) -> Dict[str, Any]:
             'lastCrash': last_crash,
             'rootCause': root_cause,
             'anomalyCount': len(anomalies),
+            'tamper_detected': summary.get('tamper_detected', False),
+            'antiforensics': summary.get('antiforensics', {'detected': False, 'count': 0, 'events': []}),
         }
 
     try:
@@ -182,6 +184,8 @@ async def get_dashboard_stats(request: Request) -> Dict[str, Any]:
             'lastCrash': last_crash,
             'rootCause': root_cause,
             'anomalyCount': anomaly_count_response.get('count', 0),
+            'tamper_detected': False,
+            'antiforensics': {'detected': False, 'count': 0, 'events': []},
         }
     except Exception:
         return empty_stats()
@@ -418,6 +422,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
             'events': events,
             'description': description,
             'fix': fix,
+            'suggestion': summary.get('suggestion', {}),
         }
 
     try:
@@ -487,6 +492,12 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
         description = f'{anomaly_count} anomalies detected in cluster {best_cluster_id} with average score {best_avg_score:.3f}'
         fix = f'Review the top anomalies in this cluster and correlate them with system logs to determine the underlying cause.'
 
+        suggestion = {}
+        for e in best_cluster_data:
+            if e.get('is_root_cause', e.get('isRootCause')):
+                suggestion = e.get('suggestion', {})
+                break
+
         return {
             'clusterId': best_cluster_id,
             'label': label,
@@ -496,6 +507,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
             'events': events,
             'description': description,
             'fix': fix,
+            'suggestion': suggestion,
         }
 
     except Exception:

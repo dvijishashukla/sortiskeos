@@ -13,10 +13,18 @@ from routes.anomalies import router as anomalies_router
 from routes.dashboard import router as dashboard_router
 from routes.logs import router as logs_router
 from routes.pipeline import router as pipeline_router
+from routes.audit import router as audit_router
 
 BASE_DIR = Path(__file__).resolve().parent
 API_ENV_PATH = BASE_DIR / '.env'
 load_dotenv(dotenv_path=API_ENV_PATH)
+
+import sys
+sys.path.insert(0, str(BASE_DIR.parent / "ml"))
+try:
+    from audit_log import write_audit
+except ImportError:
+    write_audit = lambda action, detail={}: None
 
 ES_HOST = os.getenv('ES_HOST', 'http://localhost:9200')
 ALLOWED_ORIGINS = [
@@ -36,6 +44,19 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
+@app.middleware("http")
+async def audit_middleware(request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    path = request.url.path
+    method = request.method
+    
+    if path == "/pipeline/run" and method == "POST":
+        write_audit("pipeline_triggered", {"ip": client_ip})
+    elif path == "/settings" and method in ("POST", "PUT"):
+        write_audit("settings_changed", {"ip": client_ip})
+        
+    return await call_next(request)
+
 app.state.es_host = ES_HOST
 app.state.es = AsyncElasticsearch(ES_HOST)
 
@@ -43,6 +64,7 @@ app.include_router(logs_router)
 app.include_router(anomalies_router)
 app.include_router(dashboard_router)
 app.include_router(pipeline_router)
+app.include_router(audit_router)
 
 
 @app.get('/health')

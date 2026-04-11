@@ -23,6 +23,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import solution_engine
+import tamper_detection
+import antiforensics_detector
+from audit_log import write_audit
 import numpy as np
 import pandas as pd
 from elasticsearch import Elasticsearch, helpers
@@ -125,7 +129,8 @@ def fetch_logs_from_es(es: Elasticsearch) -> pd.DataFrame:
             "level": str(src.get("level", "INFO")).upper(),
             "message": src.get("message", ""),
             "source": src.get("source", "unknown"),
-            "host": src.get("host", "unknown")
+            "host": src.get("host", "unknown"),
+            "event_id": src.get("event_id") or src.get("EventID")
         })
 
     df = pd.DataFrame(records)
@@ -146,7 +151,8 @@ def fetch_logs_from_file(path: Path = LOCAL_LOG_FILE) -> pd.DataFrame:
             "level": str(record.get("level", "INFO")).upper(),
             "message": record.get("message") or record.get("log") or "",
             "source": record.get("source", "unknown"),
-            "host": record.get("host", "unknown")
+            "host": record.get("host", "unknown"),
+            "event_id": record.get("event_id") or record.get("EventID")
         })
 
     df = pd.DataFrame(normalized)
@@ -256,6 +262,7 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
             "sample_messages": [],
             "log_levels": {},
             "root_cause_message": "",
+            "suggestion": solution_engine.analyze_cluster([]),
         }
 
     anomaly_df = df.iloc[anomaly_indices].copy()
@@ -281,6 +288,7 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
             "sample_messages": sample_messages,
             "log_levels": anomaly_df["level"].value_counts().to_dict(),
             "root_cause_message": sample_messages[0] if sample_messages else "",
+            "suggestion": solution_engine.analyze_cluster(sample_messages),
         }
 
     cluster_counts = Counter(valid_clusters)
@@ -313,6 +321,7 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
         "sample_messages": sample_messages,
         "log_levels": root_logs["level"].value_counts().to_dict(),
         "root_cause_message": sample_messages[0] if sample_messages else "",
+        "suggestion": solution_engine.analyze_cluster(sample_messages),
     }
 
 
@@ -334,7 +343,7 @@ def _infer_label(messages: list[str]) -> str:
     return "Kernel / Network"
 
 
-def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_labels: np.ndarray, root_cause: dict, mode: str) -> None:
+def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_labels: np.ndarray, root_cause: dict, mode: str, tamper_detected: bool = False, antiforensics: dict = None) -> None:
     COLLECTED_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     anomalies = []
@@ -377,6 +386,9 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
                 f"from {LOCAL_LOG_FILE.name}."
             ),
             "fix": "Review the top anomalies in this cluster and correlate them with the collected local system logs.",
+            "suggestion": root_cause.get("suggestion", {}),
+            "tamper_detected": tamper_detected,
+            "antiforensics": antiforensics or {"detected": False, "count": 0, "events": []},
         },
         "anomalies": anomalies,
     }
@@ -417,6 +429,7 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
                 "isRootCause": is_root_cause,
                 "is_root_cause": is_root_cause,
                 "rootCause": root_message if is_root_cause else "",
+                "suggestion": root_cause.get("suggestion", {}) if is_root_cause else {},
                 "analysed_at": datetime.now().isoformat(),
             }
         })
@@ -428,12 +441,31 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
 def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
     log.info("%s", "-" * 50)
     log.info("Starting ML analysis cycle in %s mode...", mode)
+    write_audit("pipeline_start")
+
+    tamper_detected = False
+    if es is None:
+        hash_file_path = COLLECTED_LOGS_DIR / "system_logs.hash"
+        if LOCAL_LOG_FILE.exists() and not tamper_detection.verify_hash(LOCAL_LOG_FILE, hash_file_path):
+            log.critical("TAMPER ALERT: system_logs.json has been modified since last collection")
+            tamper_detected = True
+            write_audit("tamper_detected", {"file": "system_logs.json"})
 
     df = fetch_logs_from_es(es) if es is not None else fetch_logs_from_file()
+    
+    antiforensics_result = None
+    if not df.empty:
+        antiforensics_result = antiforensics_detector.check_log_clearing(df.to_dict("records"))
+        if antiforensics_result.get("detected"):
+            log.critical("ANTI-FORENSICS ALERT: Log clearing detected %s time(s) before crash analysis", antiforensics_result.get("count"))
+            write_audit("antiforensics_detected", {"count": antiforensics_result.get("count")})
+
     if df.empty:
         log.warning("No logs to analyze.")
         if es is None:
-            save_results_locally(df, np.array([]), np.array([]), {}, mode)
+            save_results_locally(df, np.array([]), np.array([]), {}, mode, tamper_detected, antiforensics_result)
+            if LOCAL_LOG_FILE.exists():
+                tamper_detection.save_hash(LOCAL_LOG_FILE, COLLECTED_LOGS_DIR / "system_logs.hash")
         return
 
     df = parse_and_normalize(df)
@@ -450,8 +482,14 @@ def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
     if es is not None:
         push_anomalies_to_es(es, df, anomaly_indices, cluster_labels, root_cause)
     else:
-        save_results_locally(df, anomaly_indices, cluster_labels, root_cause, mode)
+        save_results_locally(df, anomaly_indices, cluster_labels, root_cause, mode, tamper_detected, antiforensics_result)
+        if LOCAL_LOG_FILE.exists():
+            tamper_detection.save_hash(LOCAL_LOG_FILE, COLLECTED_LOGS_DIR / "system_logs.hash")
 
+    write_audit("pipeline_complete", {
+        "anomaly_count": len(anomaly_indices),
+        "root_cause": (root_cause.get("root_cause_message") or "")[:80] or "none"
+    })
     log.info("Analysis cycle complete.")
 
 

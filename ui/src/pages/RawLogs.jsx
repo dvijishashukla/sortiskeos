@@ -30,22 +30,22 @@ function normalizeLogs(items) {
 function levelTone(level) {
   if (level === "ERROR" || level === "CRITICAL") {
     return {
-      text: "#ff7b72",
-      bg: "rgba(255, 123, 114, 0.12)",
-      border: "rgba(255, 123, 114, 0.24)",
+      text: "#ef4444",
+      bg: "rgba(239, 68, 68, 0.12)",
+      border: "rgba(239, 68, 68, 0.24)",
     };
   }
   if (level === "WARN") {
     return {
-      text: "#f2cc60",
-      bg: "rgba(242, 204, 96, 0.12)",
-      border: "rgba(242, 204, 96, 0.24)",
+      text: "#f59e0b",
+      bg: "rgba(245, 158, 11, 0.12)",
+      border: "rgba(245, 158, 11, 0.24)",
     };
   }
   return {
-    text: "#7ee787",
-    bg: "rgba(126, 231, 135, 0.12)",
-    border: "rgba(126, 231, 135, 0.22)",
+    text: "#3b82f6",
+    bg: "rgba(59, 130, 246, 0.12)",
+    border: "rgba(59, 130, 246, 0.22)",
   };
 }
 
@@ -93,10 +93,10 @@ export default function RawLogs() {
     <div style={{ padding: "32px", maxWidth: 1180, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, marginBottom: 28, animation: "fadeSlideUp 0.5s ease both", flexWrap: "wrap" }}>
         <div>
-          <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e6edf3", margin: 0, letterSpacing: "-0.5px" }}>
+          <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "-0.5px" }}>
             Raw Log Stream
           </h1>
-          <p style={{ color: "#8b949e", fontSize: 13, marginTop: 6, letterSpacing: "0.2px", lineHeight: 1.5 }}>
+          <p style={{ color: "#64748b", fontSize: 13, marginTop: 6, letterSpacing: "0.2px", lineHeight: 1.5 }}>
             Clean event table for locally collected system logs and live backend log data.
           </p>
         </div>
@@ -110,8 +110,8 @@ export default function RawLogs() {
             style={{
               padding: "10px 14px",
               borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.06)",
-              background: "rgba(13, 17, 23, 0.55)",
+              border: "1px solid #1e1e2e",
+              background: "rgba(13, 13, 20, 0.55)",
               color: "#fff",
               outline: "none",
               width: 240,
@@ -124,9 +124,9 @@ export default function RawLogs() {
             style={{
               padding: "10px 14px",
               borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.06)",
-              background: "rgba(13, 17, 23, 0.55)",
-              color: "#e6edf3",
+              border: "1px solid #1e1e2e",
+              background: "rgba(13, 13, 20, 0.55)",
+              color: "#e2e8f0",
               outline: "none",
               cursor: "pointer",
               fontSize: 13,
@@ -143,9 +143,9 @@ export default function RawLogs() {
             style={{
               padding: "10px 14px",
               borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.08)",
+              border: "1px solid #1e1e2e",
               background: "rgba(255,255,255,0.03)",
-              color: loading ? "#6e7681" : "#e6edf3",
+              color: loading ? "#64748b" : "#e2e8f0",
               cursor: loading ? "default" : "pointer",
               fontSize: 13,
             }}
@@ -156,56 +156,56 @@ export default function RawLogs() {
       </header>
 
       <div style={{
-        background: "rgba(22, 27, 34, 0.42)",
+        background: "rgba(19, 19, 31, 0.42)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
-        border: "1px solid rgba(255,255,255,0.04)",
+        border: "1px solid #1e1e2e",
         borderRadius: 14,
         overflow: "hidden",
-        boxShadow: "0 10px 30px rgba(0,0,0,0.16)",
+        boxShadow: "0 0 12px #7c3aed18",
         animation: "fadeSlideUp 0.5s ease 0.1s both",
       }}>
         <div style={{
           padding: "14px 18px",
-          borderBottom: "1px solid rgba(255,255,255,0.05)",
+          borderBottom: "1px solid #1e1e2e",
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
           gap: 12,
           flexWrap: "wrap",
         }}>
-          <div style={{ fontSize: 12, color: "#8b949e", letterSpacing: "0.4px" }}>
+          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.4px" }}>
             {loading ? "Refreshing log table..." : `${logs.length} rows loaded`}
           </div>
-          <div style={{ fontSize: 12, color: "#6e7681" }}>
+          <div style={{ fontSize: 12, color: "#64748b" }}>
             Showing time, level, source, and message only
           </div>
         </div>
 
         {loading && logs.length === 0 ? (
-          <div style={{ padding: 44, textAlign: "center", color: "#8b949e" }}>Loading logs...</div>
+          <div style={{ padding: 44, textAlign: "center", color: "#64748b" }}>Loading logs...</div>
         ) : logs.length === 0 ? (
           <div style={{ padding: 44, textAlign: "center" }}>
-            <div style={{ color: "#e6edf3", fontSize: 15, fontWeight: 600, marginBottom: 8 }}>No logs to display</div>
-            <div style={{ color: "#8b949e", fontSize: 13, lineHeight: 1.5 }}>{error}</div>
+            <div style={{ color: "#e2e8f0", fontSize: 15, fontWeight: 600, marginBottom: 8 }}>No logs to display</div>
+            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.5 }}>{error}</div>
           </div>
         ) : (
           <div style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", tableLayout: "fixed" }}>
-              <thead style={{ background: "rgba(13, 17, 23, 0.34)", position: "sticky", top: 0, zIndex: 1 }}>
+              <thead style={{ background: "rgba(13, 13, 20, 0.34)", position: "sticky", top: 0, zIndex: 1 }}>
                 <tr>
-                  <th style={{ width: "22%", padding: "14px 18px", color: "#6e7681", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Time</th>
-                  <th style={{ width: "14%", padding: "14px 18px", color: "#6e7681", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Level</th>
-                  <th style={{ width: "22%", padding: "14px 18px", color: "#6e7681", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Source</th>
-                  <th style={{ width: "42%", padding: "14px 18px", color: "#6e7681", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Message</th>
+                  <th style={{ width: "22%", padding: "14px 18px", color: "#64748b", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Time</th>
+                  <th style={{ width: "14%", padding: "14px 18px", color: "#64748b", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Level</th>
+                  <th style={{ width: "22%", padding: "14px 18px", color: "#64748b", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Source</th>
+                  <th style={{ width: "42%", padding: "14px 18px", color: "#64748b", fontWeight: 500, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase" }}>Message</th>
                 </tr>
               </thead>
               <tbody>
                 {logs.map((log) => {
                   const tone = levelTone(log.level);
                   return (
-                    <tr key={log.id} className="table-row" style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}>
-                      <td style={{ padding: "16px 18px", color: "#8b949e", fontSize: 12, verticalAlign: "top", fontFamily: "'Roboto Mono', monospace" }}>
+                    <tr key={log.id} className="table-row" style={{ borderTop: "1px solid #1e1e2e" }}>
+                      <td style={{ padding: "16px 18px", color: "#64748b", fontSize: 12, verticalAlign: "top", fontFamily: "'Roboto Mono', monospace" }}>
                         {formatTime(log.time)}
                       </td>
                       <td style={{ padding: "16px 18px", verticalAlign: "top" }}>
@@ -224,10 +224,10 @@ export default function RawLogs() {
                           {log.level}
                         </span>
                       </td>
-                      <td style={{ padding: "16px 18px", color: "#c9d1d9", fontSize: 12, verticalAlign: "top", fontFamily: "'Roboto Mono', monospace", wordBreak: "break-word" }}>
+                      <td style={{ padding: "16px 18px", color: "#e2e8f0", fontSize: 12, verticalAlign: "top", fontFamily: "'Roboto Mono', monospace", wordBreak: "break-word" }}>
                         {log.source}
                       </td>
-                      <td style={{ padding: "16px 18px", color: "#e6edf3", fontSize: 13, lineHeight: 1.55, verticalAlign: "top", wordBreak: "break-word" }}>
+                      <td style={{ padding: "16px 18px", color: "#e2e8f0", fontSize: 13, lineHeight: 1.55, verticalAlign: "top", wordBreak: "break-word" }}>
                         {log.message}
                       </td>
                     </tr>

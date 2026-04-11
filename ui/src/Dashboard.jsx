@@ -1,8 +1,31 @@
 import { useState, useEffect } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine,
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceDot,
+  BarChart, Bar, PieChart, Pie, Cell
 } from "recharts";
 import { fetchStats, fetchTimeline, fetchCrashes, fetchAnomalies, triggerPipeline } from "./api.js";
+import { Toast } from "./App.jsx";
+import ReportExport from "./components/ReportExport.jsx";
+
+function useCountUp(target, duration = 1000) {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!target) return;
+    let start = 0;
+    const increment = target / (duration / 16);
+    const timer = setInterval(() => {
+      start += increment;
+      if (start >= target) {
+        setCount(target);
+        clearInterval(timer);
+      } else {
+        setCount(Math.floor(start));
+      }
+    }, 16);
+    return () => clearInterval(timer);
+  }, [target]);
+  return count;
+}
 
 const API_BASE = (process.env.REACT_APP_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
@@ -158,19 +181,21 @@ function buildStats(stats) {
 
 // Design Badges
 const LEVEL_STYLES = {
-  ERROR: { bg: "rgba(255,59,59,0.12)", text: "#ff5f5f", dot: "#ff3b3b" },
-  WARN: { bg: "rgba(255,180,0,0.12)", text: "#ffbb33", dot: "#ffaa00" },
-  INFO: { bg: "rgba(0,210,255,0.10)", text: "#33ddff", dot: "#00c8f0" },
+  ERROR: { bg: "rgba(239, 68, 68, 0.12)", text: "#ef4444", dot: "#ef4444", shadow: "0 0 8px #ef444466" },
+  WARN: { bg: "rgba(245, 158, 11, 0.12)", text: "#f59e0b", dot: "#f59e0b", shadow: "0 0 8px #f59e0b66" },
+  INFO: { bg: "rgba(59, 130, 246, 0.10)", text: "#3b82f6", dot: "#3b82f6", shadow: "none" },
 };
 
 function LevelBadge({ level }) {
   const s = LEVEL_STYLES[level] || LEVEL_STYLES.INFO;
   return (
     <span style={{
-      background: s.bg, color: s.text, border: `1px solid ${s.dot}33`, borderRadius: 4, padding: "2px 8px",
-      fontSize: 11, fontFamily: "monospace", letterSpacing: 1, display: "inline-flex", alignItems: "center", gap: 5,
+      background: s.bg, color: s.text, boxShadow: s.shadow,
+      borderRadius: 999, padding: "2px 10px",
+      fontSize: 11, fontFamily: "monospace", fontWeight: 600, letterSpacing: 1, 
+      display: "inline-flex", alignItems: "center", gap: 5,
     }}>
-      <span style={{ width: 5, height: 5, borderRadius: "50%", background: s.dot, display: "inline-block" }} />
+      <span style={{ width: 5, height: 5, borderRadius: "50%", background: s.dot, display: "inline-block", boxShadow: s.shadow }} />
       {level}
     </span>
   );
@@ -191,30 +216,68 @@ function ScoreBadge({ score }) {
 }
 
 function StatCard({ label, value, sub, index }) {
+  const isNumberFormat = typeof value === 'string' ? /^\d+$/.test(value) : Number.isInteger(value);
+  const targetNumber = isNumberFormat ? parseInt(value, 10) : 0;
+  const animatedCount = useCountUp(targetNumber);
+
+  // Simple mock trend
+  const baseline = Math.max(1, Math.floor(targetNumber * 0.5));
+  let trendStr = "";
+  let isRising = false;
+  if (isNumberFormat && targetNumber > 0) {
+    if (targetNumber >= baseline) {
+      trendStr = `+${(((targetNumber - baseline) / baseline) * 100).toFixed(1)}%`;
+      isRising = true;
+    } else {
+      trendStr = `-${(((baseline - targetNumber) / baseline) * 100).toFixed(1)}%`;
+      isRising = false;
+    }
+  }
+
   return (
     <div className="stat-card" style={{
-      background: "rgba(22, 27, 34, 0.4)", 
-      border: "1px solid rgba(255,255,255,0.03)",
-      boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
-      backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
-      borderRadius: 12, padding: "24px", display: "flex", flexDirection: "column", gap: 8,
+      padding: "16px 20px", display: "flex", flexDirection: "column", gap: 4,
+      background: "rgba(255,255,255,0.01)", border: "1px solid rgba(255,255,255,0.03)", borderRadius: 8,
       animation: "fadeSlideUp 0.5s ease both", animationDelay: `${index * 0.08}s`,
     }}>
-      <span style={{ fontSize: 11, color: "#8b949e", letterSpacing: "1.5px", textTransform: "uppercase", fontWeight: 500 }}>{label}</span>
-      <span style={{ fontSize: 28, fontFamily: "'Roboto', sans-serif", fontWeight: 600, color: "#e6edf3", lineHeight: 1.1, letterSpacing: "-0.5px" }}>{value}</span>
-      <span style={{ fontSize: 12, color: "#6e7681", letterSpacing: "0.2px" }}>{sub}</span>
+      <span style={{ fontSize: 11, color: "#64748b", letterSpacing: "1.5px", textTransform: "uppercase", fontWeight: 500 }}>{label}</span>
+      
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+        <span style={{ fontSize: 26, fontFamily: "'Roboto', sans-serif", fontWeight: 600, color: "#e2e8f0", lineHeight: 1.1, letterSpacing: "-0.5px" }}>
+          {isNumberFormat ? animatedCount : value}
+        </span>
+        {isNumberFormat && targetNumber > 0 && (
+          <span style={{ fontSize: 11, fontWeight: 600, color: isRising ? "#ef4444" : "#22c55e" }}>
+            {trendStr} Prev Week
+          </span>
+        )}
+      </div>
+      <span style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.2px" }}>{sub}</span>
     </div>
   );
 }
 
-function LiveDot() {
+function LiveDot({ pipelineStatus, usingFallback }) {
+  let color = "#22c55e";
+  let text = "Live";
+  let animate = true;
+
+  if (pipelineStatus === "running") {
+    color = "#7c3aed";
+    text = "Running";
+  } else if (usingFallback) {
+    color = "#ef4444";
+    text = "Offline";
+    animate = false;
+  }
+
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#3fb950" }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: color }}>
       <span style={{
-        width: 8, height: 8, borderRadius: "50%", background: "#3fb950", boxShadow: "0 0 0 0 rgba(63,185,80,0.6)",
-        animation: "livePulse 1.6s ease-out infinite", display: "inline-block",
+        width: 10, height: 10, borderRadius: "50%", background: color,
+        animation: animate ? "pulse 1.6s ease-out infinite" : "none", display: "inline-block",
       }} />
-      LIVE AGENT
+      {text}
     </span>
   );
 }
@@ -229,10 +292,14 @@ export default function Dashboard({ onNavigate = () => {} }) {
   const [timelineData, setTimelineData] = useState(TIMELINE_DATA);
   const [crashHistory, setCrashHistory] = useState(CRASH_HISTORY);
   const [anomalies, setAnomalies] = useState(MOCK_ANOMALIES);
+  const [rawStats, setRawStats] = useState(null);
   
   const [usingFallback, setUsingFallback] = useState(false);
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
+  const [toast, setToast] = useState(null);
+  const [tamperDetected, setTamperDetected] = useState(false);
+  const [antiforensics, setAntiforensics] = useState({ detected: false, count: 0, events: [] });
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -251,13 +318,18 @@ export default function Dashboard({ onNavigate = () => {} }) {
       setTimelineData(formatTimelineData(timelineResponse));
       setCrashHistory(formatCrashRows(crashesResponse));
       setAnomalies(formatAnomalyRows(anomaliesResponse));
+      setRawStats(statsData);
       setUsingFallback(!hasLivePayload);
+      setTamperDetected(statsData?.tamper_detected || false);
+      setAntiforensics(statsData?.antiforensics || { detected: false, count: 0, events: [] });
     } catch (error) {
       setStats(buildStats(null));
       setTimelineData(TIMELINE_DATA);
       setCrashHistory(CRASH_HISTORY);
       setAnomalies(MOCK_ANOMALIES);
       setUsingFallback(true);
+      setTamperDetected(false);
+      setAntiforensics({ detected: false, count: 0, events: [] });
     } finally {
       setIsLoadingDashboard(false);
     }
@@ -270,9 +342,49 @@ export default function Dashboard({ onNavigate = () => {} }) {
   const timelineDomain = getTimelineDomain(timelineData);
   const filtered = anomalies.filter((a) => (levelFilter === "ALL" || a.level === levelFilter) && a.message.toLowerCase().includes(search.toLowerCase()));
 
+  const errorCount = anomalies.filter((a) => a.level === "ERROR").length;
+  const warnCount = anomalies.filter((a) => a.level === "WARN").length;
+  const infoCount = anomalies.filter((a) => a.level === "INFO").length;
+  const totalCount = errorCount + warnCount + infoCount || 1;
+
+  const clusterCounts = anomalies.reduce((acc, curr) => {
+    const c = curr.cluster;
+    if (c !== undefined && c !== null && c !== "") {
+      acc[c] = (acc[c] || 0) + 1;
+    }
+    return acc;
+  }, {});
+  const clusterKeys = Object.keys(clusterCounts).sort((a,b)=>a-b);
+  const clusterData = clusterKeys.map(k => ({ name: `Cluster ${k}`, value: clusterCounts[k] }));
+  const donutColors = ["#7c3aed", "#ec4899", "#3b82f6", "#22c55e", "#f59e0b", "#06b6d4"];
+
+  const severityData = [{
+    name: "Severity",
+    ERROR: errorCount,
+    WARN: warnCount,
+    INFO: infoCount,
+  }];
+
+  const renderBarLabel = (props) => {
+    const { x, y, width, height, value } = props;
+    if (!value) return null;
+    const percent = (value / totalCount) * 100;
+    if (percent <= 8) return null;
+    return (
+      <text x={x + width / 2} y={y + height / 2 + 1} fill="#ffffff" textAnchor="middle" dominantBaseline="central" fontSize={11} fontWeight={600} style={{ pointerEvents: 'none' }}>
+        {percent.toFixed(0)}%
+      </text>
+    );
+  };
+
   const handleTriggerPipeline = async () => {
     setPipelineStatus("running");
-    await triggerPipeline();
+    try {
+      await triggerPipeline();
+      setToast({ message: 'Pipeline completed successfully', type: 'success' });
+    } catch {
+      setToast({ message: 'Pipeline failed to run', type: 'error' });
+    }
     setTimeout(() => {
       setPipelineStatus("done");
       setTimeout(() => setPipelineStatus(null), 3000);
@@ -287,36 +399,124 @@ export default function Dashboard({ onNavigate = () => {} }) {
     <>
       <style>{`
         @media print {
-          body { background: white !important; color: black !important; }
-          * { text-shadow: none !important; box-shadow: none !important; }
-          .no-print { display: none !important; }
+          body * { visibility: hidden; }
+          #report-export,
+          #report-export * { visibility: visible; }
+          #report-export {
+            display: block !important;
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%;
+            font-family: 'Inter', sans-serif;
+            color: #000;
+            background: #fff;
+            padding: 32px 40px;
+          }
+          .report-header { margin-bottom: 16px; }
+          .report-code-block {
+            background: #f4f4f4;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-family: monospace;
+            font-size: 12px;
+            margin: 4px 0;
+          }
+          .report-table { 
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+          }
+          .report-table th {
+            background: #f4f4f4;
+            border-bottom: 2px solid #000;
+            padding: 6px 8px;
+            text-align: left;
+          }
+          .report-table td {
+            padding: 5px 8px;
+            border-bottom: 1px solid #eee;
+          }
+          .report-table tr:nth-child(even) td {
+            background: #fafafa;
+          }
+          .error-row { border-left: 3px solid #cc0000; }
+          .summary-box {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 16px;
+            margin: 16px 0;
+            background: #fafafa;
+          }
+          .confidence-high { color: #cc0000; font-weight: 600; }
+          .confidence-medium { color: #cc6600; font-weight: 600; }
+          .confidence-low { color: #006600; font-weight: 600; }
+          .report-footer { margin-top: 24px; }
+          .page-number::after { content: counter(page); }
         }
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.7); }
+          70% { box-shadow: 0 0 0 8px rgba(124, 58, 237, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(124, 58, 237, 0); }
+        }
+        .table-row {
+          border-bottom: 1px solid transparent;
+          transition: all 0.15s ease;
+        }
+        .table-row:hover {
+          background: #1e1e2e;
+          transform: translateY(-1px);
+        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.05); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
       `}</style>
 
       <div style={{ minHeight: "100vh", padding: "0 0 40px", fontFamily: "'Roboto', sans-serif" }}>
         
         <header className="no-print" style={{
-          background: "rgba(13, 17, 23, 0.75)",
+          background: "rgba(13, 13, 20, 0.75)",
           WebkitBackdropFilter: "blur(12px)",
           backdropFilter: "blur(12px)",
-          borderBottom: "1px solid rgba(255, 255, 255, 0.05)", padding: "0 32px",
+          borderBottom: "1px solid #1e1e2e", padding: "0 32px",
           position: "sticky", top: 0, zIndex: 100,
           boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
+          height: 72,
+          display: "flex",
+          alignItems: "center",
+          boxSizing: "border-box",
         }}>
-          <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 60 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-              <div style={{
-                width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#e6734b,#c0392b)",
-                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, boxShadow: "0 0 16px rgba(230,115,75,0.3)",
-              }}>!</div>
-              <div>
-                <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.5 }}>SortiskeOS Center</div>
-                <div style={{ fontSize: 10, color: "#6e7681", letterSpacing: 2, textTransform: "uppercase" }}>Intelligent Log Analysis</div>
+          <div style={{ width: "100%", maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+              <svg width="64" height="32" viewBox="0 0 64 32" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: 4 }}>
+                {/* Horizontal Guide Lines */}
+                <line x1="0" y1="14" x2="64" y2="14" stroke="#4c1d95" strokeWidth="0.5" strokeOpacity="0.6" />
+                <line x1="0" y1="26" x2="64" y2="26" stroke="#4c1d95" strokeWidth="0.5" strokeOpacity="0.6" />
+                
+                {/* Anomaly Wave Path (Widened) */}
+                <path d="M -4 20 C 4 14, 8 14, 12 20 C 16 26, 20 26, 24 20 C 28 20, 30 8, 32 8 C 34 8, 36 20, 40 20 C 44 26, 48 26, 52 20 C 56 14, 60 14, 68 20" 
+                      stroke="#8b5cf6" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                
+                {/* Glowing Green Node */}
+                <circle cx="32" cy="8" r="3" fill="#22c55e" fillOpacity="0.2" />
+                <circle cx="32" cy="8" r="1.5" fill="#22c55e" />
+                
+                {/* Anomaly Pill */}
+                <rect x="25.5" y="1" width="13" height="4" rx="2" fill="#22c55e" fillOpacity="0.25" stroke="#22c55e" strokeWidth="0.5" />
+                {/* Minimalist 3-dot visual within pill to simulate text since canvas is small */}
+                <circle cx="28.5" cy="3" r="0.6" fill="#22c55e" />
+                <circle cx="32" cy="3" r="0.6" fill="#22c55e" />
+                <circle cx="35.5" cy="3" r="0.6" fill="#22c55e" />
+              </svg>
+              <div style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                <div style={{ fontSize: 18, fontFamily: "'Inter', 'Roboto', sans-serif", fontWeight: 700, letterSpacing: 0.5, color: "#f8fafc" }}>SortiskeOS Center</div>
+                <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: 2.5, textTransform: "uppercase", fontWeight: 500, marginTop: 2 }}>Intelligent Log Analysis</div>
               </div>
             </div>
             
             <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-              <span style={{ fontFamily: "monospace", fontSize: 12, color: "#6e7681" }}>
+              <span style={{ fontFamily: "monospace", fontSize: 12, color: "#64748b" }}>
                 {time.toLocaleTimeString()} · backend: {usingFallback ? "offline" : "online"}
               </span>
               
@@ -328,34 +528,68 @@ export default function Dashboard({ onNavigate = () => {} }) {
               </button>
 
               <button className="action-btn" onClick={loadDashboard} disabled={isLoadingDashboard} style={{
-                background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, color: isLoadingDashboard ? "#484f58" : "#8b949e",
+                background: "rgba(255,255,255,0.03)", border: "1px solid #1e1e2e", borderRadius: 6, color: isLoadingDashboard ? "#64748b" : "#64748b",
                 cursor: isLoadingDashboard ? "default" : "pointer", padding: "6px 10px", fontSize: 13, display: "flex", alignItems: "center", gap: 6,
               }}>
                 ↻ Refresh
               </button>
 
-              <LiveDot />
+              <LiveDot pipelineStatus={pipelineStatus} usingFallback={usingFallback} />
             </div>
           </div>
         </header>
+
+        {tamperDetected && (
+          <div style={{ maxWidth: 1200, margin: "24px auto 0", padding: "0 32px" }}>
+            <div style={{
+              background: "#ef444420", border: "1px solid #ef4444", color: "#ef4444",
+              borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 500,
+            }}>
+              ⚠ TAMPER ALERT: Log file was modified before analysis. Results may be unreliable.
+            </div>
+          </div>
+        )}
+
+        {antiforensics.detected && (
+          <div style={{ maxWidth: 1200, margin: "24px auto 0", padding: "0 32px" }}>
+            <div style={{
+              background: "#f59e0b20", border: "1px solid #f59e0b", color: "#f59e0b",
+              borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 500,
+            }}>
+              <div>⚠ ANTI-FORENSICS ALERT: Event logs were cleared {antiforensics.count} time(s) before this crash. Investigation integrity compromised.</div>
+              {antiforensics.events?.length > 0 && (
+                <details style={{ marginTop: 8, cursor: "pointer", borderTop: "1px solid rgba(245, 158, 11, 0.3)", paddingTop: 8 }}>
+                  <summary style={{ outline: "none" }}>View removed log sequences</summary>
+                  <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20, fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                    {antiforensics.events.map((e, idx) => (
+                      <li key={idx} style={{ marginBottom: 4, opacity: 0.8 }}>
+                        [{e.timestamp}] Windows Event ID {e.event_id} (Channel: {e.channel})
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          </div>
+        )}
 
         <main style={{ maxWidth: 1200, margin: "0 auto", padding: "28px 32px", display: "flex", flexDirection: "column", gap: 32 }}>
           
           {/* Priority Layer 1: The Root Cause Alert */}
           <div style={{
-            background: "rgba(230,115,75,0.02)",
-            border: "1px solid rgba(230,115,75,0.12)", borderLeft: "3px solid #e6734b",
+            background: "rgba(124, 58, 237, 0.02)",
+            border: "1px solid #1e1e2e", borderLeft: "3px solid #7c3aed",
             borderRadius: 12, padding: "24px 32px", display: "flex", alignItems: "flex-start", gap: 24,
-            boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
+            boxShadow: "0 0 12px #7c3aed18",
             animation: "fadeSlideUp 0.6s ease both",
           }}>
-            <div style={{ fontSize: 24, marginTop: 4, fontFamily: "'Roboto Mono', monospace", color: "#e6734b", opacity: 0.8 }}>⚠</div>
+            <div style={{ fontSize: 24, marginTop: 4, fontFamily: "'Roboto Mono', monospace", color: "#7c3aed", opacity: 0.8 }}>⚠</div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#e6734b", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>
                 Root Cause Identified
               </div>
               <div style={{
-                fontSize: 18, color: "#e6edf3", lineHeight: 1.5, maxWidth: "100%",
+                fontSize: 18, color: "#e2e8f0", lineHeight: 1.5, maxWidth: "100%",
                 overflowWrap: "anywhere", wordBreak: "break-word",
               }}>
                 {summarizeRootCause(latestRootCause?.message)}
@@ -367,7 +601,7 @@ export default function Dashboard({ onNavigate = () => {} }) {
                   `Severity Vector: ${latestRootCause.score.toFixed(3)}`,
                 ].map((tag) => (
                   <span key={tag} style={{
-                    background: "rgba(230,115,75,0.1)", color: "#e6734b", border: "1px solid rgba(230,115,75,0.2)",
+                    background: "rgba(124, 58, 237, 0.1)", color: "#7c3aed", border: "1px solid #1e1e2e",
                     borderRadius: 4, padding: "4px 12px", fontSize: 12, fontFamily: "'Roboto Mono', monospace", letterSpacing: 0.5,
                   }}>{tag}</span>
                 ))}
@@ -375,44 +609,130 @@ export default function Dashboard({ onNavigate = () => {} }) {
             </div>
           </div>
 
-          {/* Priority Layer 2: KPIs */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 16 }}>
-             {stats.map((s, i) => <StatCard key={s.label} {...s} index={i} />)}
+          {/* Priority Layer 2: Grid Row 1 (KPI Matrix + Donut) */}
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 24 }}>
+            {/* KPI Matrix */}
+            <div style={{
+              background: "#13131f",
+              border: "1px solid #1e1e2e",
+              borderRadius: 12,
+              padding: "20px",
+              boxShadow: "0 0 12px #7c3aed18",
+              display: "flex", flexDirection: "column", gap: 16
+            }}>
+              <div style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>System Health Matrix</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                {stats.slice(0,3).map((s, i) => <StatCard key={s.label} {...s} index={i} />)}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+                {stats.slice(3,5).map((s, i) => <StatCard key={s.label} {...s} index={i + 3} />)}
+              </div>
+            </div>
+
+            {/* Cluster Donut */}
+            <div style={{
+              background: "#13131f",
+              border: "1px solid #1e1e2e",
+              borderRadius: 12,
+              padding: "20px",
+              boxShadow: "0 0 12px #7c3aed18",
+              display: "flex", flexDirection: "column"
+            }}>
+               <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8, fontWeight: 500 }}>Open Anomalies by Classification</div>
+               <div style={{ flex: 1, display: "flex", position: "relative", alignItems: "center", justifyContent: "center" }}>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <PieChart>
+                      {clusterData.length > 0 ? (
+                        <Pie data={clusterData} dataKey="value" nameKey="name" innerRadius={70} outerRadius={100} paddingAngle={2} stroke="none">
+                          {clusterData.map((entry, index) => <Cell key={`cell-${index}`} fill={donutColors[index % donutColors.length]} />)}
+                        </Pie>
+                      ) : (
+                        <Pie data={[{ value: 1 }]} dataKey="value" innerRadius={70} outerRadius={100} stroke="none" fill="rgba(255,255,255,0.05)" />
+                      )}
+                      <Tooltip contentStyle={{ background: "#0d0d14", border: "1px solid #1e1e2e", borderRadius: 6, color: "#e2e8f0" }} itemStyle={{ color: "#e2e8f0" }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", textAlign: "center", pointerEvents: "none" }}>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: "#e2e8f0" }}>{clusterData.length > 0 ? anomalies.length : "0"}</div>
+                    <div style={{ fontSize: 10, color: "#64748b", letterSpacing: 1 }}>TOTAL</div>
+                  </div>
+               </div>
+               <div style={{ display: "flex", justifyContent: "center", gap: "12px 16px", flexWrap: "wrap", marginTop: 12 }}>
+                 {clusterData.map((entry, index) => (
+                   <div key={entry.name} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#e2e8f0" }}>
+                     <span style={{ width: 8, height: 8, borderRadius: "50%", background: donutColors[index % donutColors.length] }} />
+                     {entry.name} <span style={{ color: "#64748b" }}>{entry.value}</span>
+                   </div>
+                 ))}
+                 {clusterData.length === 0 && (
+                   <div style={{ fontSize: 12, color: "#64748b" }}>No Data</div>
+                 )}
+               </div>
+            </div>
+          </div>
+
+          {/* Priority Layer 2.5: Severity Distribution */}
+          <div style={{
+            background: "#13131f",
+            border: "1px solid #1e1e2e",
+            borderRadius: 12,
+            padding: "16px",
+            boxShadow: "0 0 12px #7c3aed18"
+          }}>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8, fontWeight: 500 }}>
+              Log Severity Distribution
+            </div>
+            <div style={{ height: 24, width: "100%", borderRadius: 8, overflow: "hidden" }}>
+              <ResponsiveContainer width="100%" height={24}>
+                <BarChart layout="vertical" data={severityData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <XAxis type="number" hide domain={[0, totalCount]} />
+                  <YAxis type="category" dataKey="name" hide />
+                  <Tooltip 
+                    cursor={{ fill: 'transparent' }}
+                    formatter={(value, name) => [`${value} (${((value / totalCount) * 100).toFixed(1)}%)`, name]}
+                    contentStyle={{ background: "#0d0d14", border: "1px solid #1e1e2e", borderRadius: 6, fontSize: 12, color: "#e2e8f0" }}
+                    itemStyle={{ padding: 0 }}
+                  />
+                  <Bar dataKey="ERROR" stackId="a" fill="#ef4444" label={renderBarLabel} isAnimationActive={false} />
+                  <Bar dataKey="WARN" stackId="a" fill="#f59e0b" label={renderBarLabel} isAnimationActive={false} />
+                  <Bar dataKey="INFO" stackId="a" fill="#3b82f6" label={renderBarLabel} isAnimationActive={false} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
 
           {/* Priority Layer 3: Algorithm Metrics Timeline */}
           <div style={{ 
-            background: "rgba(22, 27, 34, 0.4)", 
-            border: "1px solid rgba(255,255,255,0.03)", 
+            background: "rgba(19, 19, 31, 0.4)", 
+            border: "1px solid #1e1e2e", 
             borderRadius: 12, overflow: "hidden",
-            boxShadow: "0 4px 24px rgba(0,0,0,0.1)",
+            boxShadow: "0 0 12px #7c3aed18",
             backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
           }}>
-            <div style={{ padding: "16px 20px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: "#c9d1d9", letterSpacing: 0.5 }}>Isolation Forest Around Crash Time</span>
-              <span style={{ fontSize: 11, color: "#6e7681", fontStyle: "italic" }}>5-minute anomaly buckets centered on the latest detected crash window</span>
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid #1e1e2e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", letterSpacing: 0.5 }}>Isolation Forest Around Crash Time</span>
+              <span style={{ fontSize: 11, color: "#64748b", fontStyle: "italic" }}>5-minute anomaly buckets centered on the latest detected crash window</span>
             </div>
             <div style={{ padding: "20px 10px 10px" }}>
               <ResponsiveContainer width="100%" height={240}>
                 <AreaChart data={timelineData} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
                   <defs>
                     <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#e6734b" stopOpacity={0.4} />
-                      <stop offset="95%" stopColor="#e6734b" stopOpacity={0.0} />
+                      <stop offset="0%" stopColor="#7c3aed" stopOpacity={0.8} />
+                      <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#21262d" vertical={false} />
-                  <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "#8b949e", fontFamily: "'Roboto Mono', monospace" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                  <XAxis dataKey="hour" tick={{ fontSize: 11, fill: "#64748b", fontFamily: "'Roboto Mono', monospace" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
                   <YAxis
                     domain={timelineDomain}
                     tickFormatter={(value) => Number(value).toFixed(value < 1 ? 2 : 1)}
-                    tick={{ fontSize: 11, fill: "#8b949e", fontFamily: "'Roboto Mono', monospace" }}
+                    tick={{ fontSize: 11, fill: "#64748b", fontFamily: "'Roboto Mono', monospace" }}
                     tickLine={false}
                     axisLine={false}
                   />
-                  {crashMarkerLabel ? <ReferenceLine x={crashMarkerLabel} stroke="#ff5f5f" strokeDasharray="4 4" /> : null}
-                  <Tooltip content={<div style={{background: "#0d1117", border: "1px solid #30363d", padding: "8px", borderRadius: "6px", color: "#e6734b", fontFamily: "monospace"}}>Score Evaluated</div>} />
-                  <Area type="monotone" dataKey="score" stroke="#e6734b" strokeWidth={2} fill="url(#scoreGrad)" dot={false} activeDot={{ r: 4, fill: "#e6734b" }} />
+                  {crashMarkerLabel ? <ReferenceDot x={crashMarkerLabel} y={timelineData.find(d => d.hour === crashMarkerLabel)?.score || 0} r={6} fill="#ef4444" stroke="#000" strokeWidth={2} /> : null}
+                  <Tooltip content={<div style={{background: "#0d0d14", border: "1px solid #1e1e2e", padding: "8px", borderRadius: "6px", color: "#7c3aed", fontFamily: "monospace"}}>Score Evaluated</div>} />
+                  <Area type="monotone" dataKey="score" stroke="#7c3aed" strokeWidth={2} fill="url(#scoreGrad)" dot={false} activeDot={{ r: 4, fill: "#7c3aed" }} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -420,40 +740,69 @@ export default function Dashboard({ onNavigate = () => {} }) {
 
           {/* Priority Layer 4: Raw Clustering Feeds */}
           <div style={{ 
-            background: "rgba(22, 27, 34, 0.3)", 
-            border: "1px solid rgba(255,255,255,0.03)", 
+            background: "rgba(19, 19, 31, 0.3)", 
+            border: "1px solid #1e1e2e", 
             borderRadius: 12, overflow: "hidden",
-            boxShadow: "0 4px 24px rgba(0,0,0,0.1)",
+            boxShadow: "0 0 12px #7c3aed18",
             backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
           }}>
-             <div style={{ padding: "16px 20px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: "#c9d1d9", letterSpacing: 0.5 }}>Recent Evaluated Anomalies ({filtered.length})</span>
-               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <select value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)} style={{ background: "#0d1117", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: 4, padding: "6px 10px", fontSize: 12 }}>
-                    {["ALL", "ERROR", "WARN", "INFO"].map((l) => <option key={l}>{l}</option>)}
-                  </select>
-                </div>
+             <div style={{ padding: "16px 20px", borderBottom: "1px solid #1e1e2e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+               <span style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", letterSpacing: 0.5 }}>Top Open Alerts ({filtered.length})</span>
+               <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                    <span style={{ position: "absolute", left: 12, color: "#64748b", fontSize: 12 }}>🔍</span>
+                    <input 
+                      type="text" 
+                      value={search} 
+                      onChange={(e) => setSearch(e.target.value)} 
+                      placeholder="Search alerts" 
+                      style={{ 
+                        background: "#0d0d14", border: "1px solid #1e1e2e", color: "#e2e8f0", 
+                        borderRadius: 999, padding: "6px 16px 6px 36px", fontSize: 12, width: 220, outline: "none"
+                      }} 
+                    />
+                  </div>
+                  <div style={{ position: "relative" }}>
+                    <select value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)} 
+                      style={{ 
+                        appearance: "none", WebkitAppearance: "none", cursor: "pointer",
+                        background: "#0d0d14", border: "1px solid #1e1e2e", color: "#e2e8f0", 
+                        borderRadius: 999, padding: "6px 28px 6px 16px", fontSize: 12, outline: "none"
+                      }}
+                    >
+                      <option value="ALL">All Severities</option>
+                      <option value="ERROR">Error</option>
+                      <option value="WARN">Warning</option>
+                      <option value="INFO">Info</option>
+                    </select>
+                    <span style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", color: "#64748b", fontSize: 10, pointerEvents: "none" }}>▼</span>
+                  </div>
+               </div>
             </div>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead style={{ background: "rgba(13, 17, 23, 0.3)", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+              <thead style={{ background: "rgba(13, 13, 20, 0.3)", borderBottom: "1px solid #1e1e2e" }}>
                 <tr>
-                   <th style={{ padding: "14px 20px", color: "#8b949e", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1.2px", textTransform: "uppercase" }}>Time</th>
-                   <th style={{ padding: "14px 20px", color: "#8b949e", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1.2px", textTransform: "uppercase" }}>Level</th>
-                   <th style={{ padding: "14px 20px", color: "#8b949e", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1.2px", textTransform: "uppercase" }}>Message</th>
-                   <th style={{ padding: "14px 20px", color: "#8b949e", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1.2px", textTransform: "uppercase" }}>Score</th>
-                   <th style={{ padding: "14px 20px", color: "#8b949e", textAlign: "center", fontSize: 11, fontWeight: 500, letterSpacing: "1.2px", textTransform: "uppercase" }}>Root Cause</th>
-                   <th style={{ padding: "14px 20px", color: "#8b949e", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1.2px", textTransform: "uppercase" }}>Cluster</th>
+                   <th style={{ padding: "14px 24px", color: "#64748b", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1px", textTransform: "uppercase" }}>Reported Time</th>
+                   <th style={{ padding: "14px 20px", color: "#64748b", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1px", textTransform: "uppercase" }}>Severity</th>
+                   <th style={{ padding: "14px 20px", color: "#64748b", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1px", textTransform: "uppercase" }}>Alert Name</th>
+                   <th style={{ padding: "14px 20px", color: "#64748b", textAlign: "left", fontSize: 11, fontWeight: 500, letterSpacing: "1px", textTransform: "uppercase" }}>Risk Score</th>
+                   <th style={{ padding: "14px 20px", color: "#64748b", textAlign: "center", fontSize: 11, fontWeight: 500, letterSpacing: "1px", textTransform: "uppercase" }}>Source Node</th>
+                   <th style={{ padding: "14px 24px 14px 10px", color: "#64748b", textAlign: "right", fontSize: 11, fontWeight: 500, letterSpacing: "1px", textTransform: "uppercase" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((a, i) => (
-                  <tr key={a.id} className="table-row" style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
-                    <td style={{ padding: "14px 20px", fontFamily: "'Roboto Mono', monospace", fontSize: 12, color: "#8b949e" }}>{a.time}</td>
+                  <tr key={a.id} className="table-row">
+                    <td style={{ padding: "14px 24px", fontFamily: "'Roboto Mono', monospace", fontSize: 12, color: "#64748b" }}>{a.time}</td>
                     <td style={{ padding: "14px 20px" }}><LevelBadge level={a.level} /></td>
-                    <td style={{ padding: "14px 20px", fontSize: 13, color: "#c9d1d9", maxWidth: 400 }}><span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.message}</span></td>
+                    <td style={{ padding: "14px 20px", fontSize: 12, color: "#e2e8f0", maxWidth: 400 }}><span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.message}</span></td>
                     <td style={{ padding: "14px 20px" }}><ScoreBadge score={a.score} /></td>
-                    <td style={{ padding: "14px 20px", textAlign: "center" }}>{a.isRootCause ? <span style={{ color: "#3fb950", fontSize: 16 }}>OK</span> : <span style={{ color: "#484f58" }}>-</span>}</td>
-                     <td style={{ padding: "14px 20px", fontFamily: "'Roboto Mono', monospace", fontSize: 12, color: "#6e7681" }}>C{a.cluster}</td>
+                    <td style={{ padding: "14px 20px", textAlign: "center" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b", background: "rgba(255,255,255,0.02)", padding: "4px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.03)" }}>
+                        C{a.cluster} {a.isRootCause ? "🔥" : ""}
+                      </span>
+                    </td>
+                    <td style={{ padding: "14px 24px 14px 10px", textAlign: "right", color: "#64748b", fontSize: 16, cursor: "pointer", userSelect: "none" }}>⋮</td>
                   </tr>
                 ))}
               </tbody>
@@ -462,6 +811,14 @@ export default function Dashboard({ onNavigate = () => {} }) {
           
         </main>
       </div>
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      <ReportExport
+        anomalies={anomalies}
+        rawStats={rawStats}
+        tamperDetected={tamperDetected}
+        antiforensics={antiforensics}
+        clusterCounts={clusterCounts}
+      />
     </>
   );
 }
