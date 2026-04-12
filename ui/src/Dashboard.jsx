@@ -6,6 +6,7 @@ import {
 import { fetchStats, fetchTimeline, fetchCrashes, fetchAnomalies, triggerPipeline } from "./api.js";
 import { Toast } from "./App.jsx";
 import ReportExport from "./components/ReportExport.jsx";
+import PageHeader from "./components/PageHeader.jsx";
 
 function useCountUp(target, duration = 1000) {
   const [count, setCount] = useState(0);
@@ -257,36 +258,12 @@ function StatCard({ label, value, sub, index }) {
   );
 }
 
-function LiveDot({ pipelineStatus, usingFallback }) {
-  let color = "#22c55e";
-  let text = "Live";
-  let animate = true;
-
-  if (pipelineStatus === "running") {
-    color = "#7c3aed";
-    text = "Running";
-  } else if (usingFallback) {
-    color = "#ef4444";
-    text = "Offline";
-    animate = false;
-  }
-
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: color }}>
-      <span style={{
-        width: 10, height: 10, borderRadius: "50%", background: color,
-        animation: animate ? "pulse 1.6s ease-out infinite" : "none", display: "inline-block",
-      }} />
-      {text}
-    </span>
-  );
-}
+// LiveDot is now handled in PageHeader.jsx components
 
 export default function Dashboard({ onNavigate = () => {} }) {
   const [tab, setTab] = useState("anomalies");
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState("ALL");
-  const [time, setTime] = useState(new Date());
   
   const [stats, setStats] = useState(buildStats(null));
   const [timelineData, setTimelineData] = useState(TIMELINE_DATA);
@@ -301,10 +278,8 @@ export default function Dashboard({ onNavigate = () => {} }) {
   const [tamperDetected, setTamperDetected] = useState(false);
   const [antiforensics, setAntiforensics] = useState({ detected: false, count: 0, events: [] });
 
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  // Dashboard initialization
+  useEffect(() => { loadDashboard(); }, []);
 
   const loadDashboard = async () => {
     setIsLoadingDashboard(true);
@@ -335,7 +310,7 @@ export default function Dashboard({ onNavigate = () => {} }) {
     }
   };
 
-  useEffect(() => { loadDashboard(); }, []);
+  // Dashboard initialization hook (removed duplicate)
 
   const latestRootCause = anomalies.find((item) => item.isRootCause) || anomalies[0] || null;
   const crashMarkerLabel = formatChartTimeLabel(crashHistory[0]?.time);
@@ -475,51 +450,13 @@ export default function Dashboard({ onNavigate = () => {} }) {
 
       <div style={{ minHeight: "100vh", padding: "0 0 40px", fontFamily: "'Roboto', sans-serif" }}>
         
-        <header className="no-print" style={{
-          background: "rgba(13, 13, 20, 0.75)",
-          WebkitBackdropFilter: "blur(12px)",
-          backdropFilter: "blur(12px)",
-          borderBottom: "1px solid #1e1e2e", padding: "0 32px",
-          position: "sticky", top: 0, zIndex: 100,
-          boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
-          height: 72,
-          display: "flex",
-          alignItems: "center",
-          boxSizing: "border-box",
-        }}>
-          <div style={{ width: "100%", maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-              <svg width="64" height="32" viewBox="0 0 64 32" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: 4 }}>
-                {/* Horizontal Guide Lines */}
-                <line x1="0" y1="14" x2="64" y2="14" stroke="#4c1d95" strokeWidth="0.5" strokeOpacity="0.6" />
-                <line x1="0" y1="26" x2="64" y2="26" stroke="#4c1d95" strokeWidth="0.5" strokeOpacity="0.6" />
-                
-                {/* Anomaly Wave Path (Widened) */}
-                <path d="M -4 20 C 4 14, 8 14, 12 20 C 16 26, 20 26, 24 20 C 28 20, 30 8, 32 8 C 34 8, 36 20, 40 20 C 44 26, 48 26, 52 20 C 56 14, 60 14, 68 20" 
-                      stroke="#8b5cf6" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                
-                {/* Glowing Green Node */}
-                <circle cx="32" cy="8" r="3" fill="#22c55e" fillOpacity="0.2" />
-                <circle cx="32" cy="8" r="1.5" fill="#22c55e" />
-                
-                {/* Anomaly Pill */}
-                <rect x="25.5" y="1" width="13" height="4" rx="2" fill="#22c55e" fillOpacity="0.25" stroke="#22c55e" strokeWidth="0.5" />
-                {/* Minimalist 3-dot visual within pill to simulate text since canvas is small */}
-                <circle cx="28.5" cy="3" r="0.6" fill="#22c55e" />
-                <circle cx="32" cy="3" r="0.6" fill="#22c55e" />
-                <circle cx="35.5" cy="3" r="0.6" fill="#22c55e" />
-              </svg>
-              <div style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
-                <div style={{ fontSize: 18, fontFamily: "'Inter', 'Roboto', sans-serif", fontWeight: 700, letterSpacing: 0.5, color: "#f8fafc" }}>SortiskeOS Center</div>
-                <div style={{ fontSize: 11, color: "#94a3b8", letterSpacing: 2.5, textTransform: "uppercase", fontWeight: 500, marginTop: 2 }}>Intelligent Log Analysis</div>
-              </div>
-            </div>
-            
-            <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-              <span style={{ fontFamily: "monospace", fontSize: 12, color: "#64748b" }}>
-                {time.toLocaleTimeString()} · backend: {usingFallback ? "offline" : "online"}
-              </span>
-              
+        <PageHeader 
+          title="System Dashboard" 
+          subtitle="Active Session Monitor" 
+          usingFallback={usingFallback}
+          pipelineStatus={pipelineStatus}
+          actions={
+            <>
               <button className="action-btn" onClick={handlePrintReport} style={{
                 background: "#238636", border: "1px solid rgba(240,246,252,0.1)", borderRadius: 6, color: "#fff",
                 cursor: "pointer", padding: "6px 14px", fontSize: 13, fontWeight: 500,
@@ -533,48 +470,44 @@ export default function Dashboard({ onNavigate = () => {} }) {
               }}>
                 ↻ Refresh
               </button>
+            </>
+          }
+        />
 
-              <LiveDot pipelineStatus={pipelineStatus} usingFallback={usingFallback} />
-            </div>
-          </div>
-        </header>
+        <div style={{ maxWidth: 1200, margin: "0 auto", padding: "0 32px 32px", display: "flex", flexDirection: "column", gap: 32 }}>
+          <div style={{ height: 24 }} />
 
         {tamperDetected && (
-          <div style={{ maxWidth: 1200, margin: "24px auto 0", padding: "0 32px" }}>
-            <div style={{
-              background: "#ef444420", border: "1px solid #ef4444", color: "#ef4444",
-              borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 500,
-            }}>
-              ⚠ TAMPER ALERT: Log file was modified before analysis. Results may be unreliable.
-            </div>
+          <div style={{
+            background: "#ef444420", border: "1px solid #ef4444", color: "#ef4444",
+            borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 500,
+          }}>
+            ⚠ TAMPER ALERT: Log file was modified before analysis. Results may be unreliable.
           </div>
         )}
 
         {antiforensics.detected && (
-          <div style={{ maxWidth: 1200, margin: "24px auto 0", padding: "0 32px" }}>
-            <div style={{
-              background: "#f59e0b20", border: "1px solid #f59e0b", color: "#f59e0b",
-              borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 500,
-            }}>
-              <div>⚠ ANTI-FORENSICS ALERT: Event logs were cleared {antiforensics.count} time(s) before this crash. Investigation integrity compromised.</div>
-              {antiforensics.events?.length > 0 && (
-                <details style={{ marginTop: 8, cursor: "pointer", borderTop: "1px solid rgba(245, 158, 11, 0.3)", paddingTop: 8 }}>
-                  <summary style={{ outline: "none" }}>View removed log sequences</summary>
-                  <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20, fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                    {antiforensics.events.map((e, idx) => (
-                      <li key={idx} style={{ marginBottom: 4, opacity: 0.8 }}>
-                        [{e.timestamp}] Windows Event ID {e.event_id} (Channel: {e.channel})
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-            </div>
+          <div style={{
+            background: "#f59e0b20", border: "1px solid #f59e0b", color: "#f59e0b",
+            borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 500,
+          }}>
+            <div>⚠ ANTI-FORENSICS ALERT: Event logs were cleared {antiforensics.count} time(s) before this crash. Investigation integrity compromised.</div>
+            {antiforensics.events?.length > 0 && (
+              <details style={{ marginTop: 8, cursor: "pointer", borderTop: "1px solid rgba(245, 158, 11, 0.3)", paddingTop: 8 }}>
+                <summary style={{ outline: "none" }}>View removed log sequences</summary>
+                <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 20, fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                  {antiforensics.events.map((e, idx) => (
+                    <li key={idx} style={{ marginBottom: 4, opacity: 0.8 }}>
+                      [{e.timestamp}] Windows Event ID {e.event_id} (Channel: {e.channel})
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
         )}
 
-        <main style={{ maxWidth: 1200, margin: "0 auto", padding: "28px 32px", display: "flex", flexDirection: "column", gap: 32 }}>
-          
+
           {/* Priority Layer 1: The Root Cause Alert */}
           <div style={{
             background: "rgba(124, 58, 237, 0.02)",
@@ -809,7 +742,7 @@ export default function Dashboard({ onNavigate = () => {} }) {
             </table>
           </div>
           
-        </main>
+        </div>
       </div>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       <ReportExport

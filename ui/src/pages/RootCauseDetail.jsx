@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchRootCause } from "../api.js";
+import PageHeader from "../components/PageHeader.jsx";
  
 const DEFAULT_CLUSTER = {
   id: 2, label: "Primary - Kernel / Network", isRoot: true,
@@ -161,23 +162,14 @@ export default function RootCauseDetail({ onBack }) {
         @keyframes fadeUp { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
       `}</style>
  
-      <div style={{ padding: "32px", maxWidth: 1000, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 32, animation: "fadeSlideUp 0.5s ease both" }}>
-          <button className="action-btn" onClick={onBack} style={{
-            background: "rgba(255,255,255,0.03)", border: "1px solid #1e1e2e", color: "#64748b",
-            borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontSize: 13,
-            display: "flex", alignItems: "center", gap: 8, fontWeight: 500,
-          }}>‹ Back</button>
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "-0.5px" }}>
-              Root Cause Analysis
-            </h1>
-            <div style={{ fontSize: 11, color: "#64748b", marginTop: 6, letterSpacing: "1px", textTransform: "uppercase", fontWeight: 500 }}>
-              {usingFallback ? "Local Buffer" : "FastAPI Anomaly Clusters"}
-            </div>
-          </div>
-        </div>
+      <PageHeader 
+        title="Root Cause Analysis" 
+        subtitle={usingFallback ? "Local Buffer" : "FastAPI Anomaly Clusters"} 
+        usingFallback={usingFallback}
+      />
+
+      <div style={{ padding: "0 32px 32px", maxWidth: 1200, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
+        <div style={{ height: 32 }} /> {/* Spacing spacer replacing old header mb */}
  
         {/* Model stats strip */}
         <div style={{

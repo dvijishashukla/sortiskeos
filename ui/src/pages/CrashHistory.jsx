@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchCrashes } from "../api";
+import PageHeader from "../components/PageHeader.jsx";
 
 export default function CrashHistory() {
   const [crashes, setCrashes] = useState([]);
@@ -15,15 +16,15 @@ export default function CrashHistory() {
   }, []);
 
   return (
-    <div style={{ padding: "32px", maxWidth: 1000, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
-      <header style={{ marginBottom: 40, animation: "fadeSlideUp 0.5s ease both" }}>
-        <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "-0.5px" }}>
-          Crash & Anomaly History
-        </h1>
-        <p style={{ color: "#64748b", fontSize: 13, marginTop: 6, letterSpacing: "0.2px" }}>
-          Chronological record of clustered critical events and system crashes
-        </p>
-      </header>
+    <>
+      <PageHeader 
+        title="Crash & Anomaly History" 
+        subtitle="Chronological record of critical events" 
+        usingFallback={false} // History is usually from ES or local stable logs
+      />
+
+      <div style={{ padding: "0 32px 32px", maxWidth: 1200, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
+        <div style={{ height: 32 }} />
 
       {loading ? (
         <div style={{ color: "#64748b", fontSize: 14 }}>Loading timeline...</div>
@@ -101,6 +102,7 @@ export default function CrashHistory() {
           ))}
         </div>
       )}
-    </div>
+      </div>
+    </>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { fetchAuditLog, verifyAuditLog } from "../api";
+import PageHeader from "../components/PageHeader.jsx";
 
 // Action pill styles
 const ACTION_COLORS = {
@@ -104,22 +105,13 @@ export default function AuditLog() {
   }, [load]);
 
   return (
-    <div style={{ padding: "32px", maxWidth: 1100, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
-
-      {/* Header */}
-      <header style={{ marginBottom: 32, animation: "fadeSlideUp 0.5s ease both" }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 20, flexWrap: "wrap" }}>
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "-0.5px" }}>
-              Tamper-Evident Audit Log
-            </h1>
-            <p style={{ color: "#64748b", fontSize: 13, marginTop: 6, letterSpacing: "0.2px" }}>
-              Cryptographic SHA-256 chain of all significant system actions
-            </p>
-          </div>
-
-          {/* Integrity Controls */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+    <>
+      <PageHeader 
+        title="Audit Log" 
+        subtitle="Cryptographic SHA-256 event chain" 
+        usingFallback={false}
+        actions={
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <IntegrityBadge result={verifyResult} loading={verifying} />
             <button
               id="verify-integrity-btn"
@@ -141,7 +133,7 @@ export default function AuditLog() {
               onMouseOver={e => { if (!verifying) e.target.style.background = "rgba(124,58,237,0.28)"; }}
               onMouseOut={e => { e.target.style.background = "rgba(124,58,237,0.15)"; }}
             >
-              {verifying ? "Verifying..." : "⊛ Verify Integrity"}
+              {verifying ? "Verifying..." : "Verify Integrity"}
             </button>
             <button
               id="refresh-audit-btn"
@@ -160,18 +152,19 @@ export default function AuditLog() {
               onMouseOver={e => { e.target.style.color = "#e2e8f0"; }}
               onMouseOut={e => { e.target.style.color = "#64748b"; }}
             >
-              ↺ Refresh
+              ↻ Refresh
             </button>
           </div>
-        </div>
+        }
+      />
 
-        {/* Last refresh metadata */}
+      <div style={{ padding: "0 32px 32px", maxWidth: 1200, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
+        <div style={{ height: 32 }} />
         {lastRefresh && (
-          <div style={{ marginTop: 10, fontSize: 11, color: "#64748b", fontFamily: "'Roboto Mono', monospace" }}>
+          <div style={{ marginBottom: 20, fontSize: 11, color: "#64748b", fontFamily: "'Roboto Mono', monospace" }}>
             Last refreshed: {lastRefresh.toLocaleTimeString()} · Auto-refresh every 60s · {entries.length} entries
           </div>
         )}
-      </header>
 
       {/* Table */}
       <div style={{
@@ -287,6 +280,7 @@ export default function AuditLog() {
           })
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

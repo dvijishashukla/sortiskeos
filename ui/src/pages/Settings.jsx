@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { triggerPipeline, checkHealth } from "../api";
+import PageHeader from "../components/PageHeader.jsx";
 
 export default function Settings() {
   const [esConnected, setEsConnected] = useState(false);
@@ -31,15 +32,15 @@ export default function Settings() {
   };
 
   return (
-    <div style={{ padding: "32px", maxWidth: 800, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
-      <header style={{ marginBottom: 40, animation: "fadeSlideUp 0.5s ease both" }}>
-        <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "-0.5px" }}>
-          System Configuration
-        </h1>
-        <p style={{ color: "#64748b", fontSize: 13, marginTop: 6, letterSpacing: "0.2px" }}>
-          Local UI preferences and manual backend diagnostic tools
-        </p>
-      </header>
+    <>
+      <PageHeader 
+        title="System Configuration" 
+        subtitle="Local UI preferences and diagnostic tools" 
+        usingFallback={!esConnected}
+      />
+
+      <div style={{ padding: "0 32px 32px", maxWidth: 1200, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
+        <div style={{ height: 32 }} />
 
       <section style={{ marginBottom: 40, animation: "fadeSlideUp 0.5s ease 0.05s both" }}>
         <h2 style={{ fontSize: 13, fontWeight: 600, color: "#64748b", marginBottom: 16, letterSpacing: "1.2px", textTransform: "uppercase" }}>
@@ -134,7 +135,7 @@ export default function Settings() {
           </div>
         </div>
       </section>
-
     </div>
+    </>
   );
 }

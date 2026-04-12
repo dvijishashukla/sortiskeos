@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from "recharts";
 import { fetchAnomalies } from "../api.js";
+import PageHeader from "../components/PageHeader.jsx";
 
 const API_BASE = (process.env.REACT_APP_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
@@ -151,22 +152,15 @@ export default function AnomaliesDetail({ onBack }) {
         tr:hover td { background: rgba(48,54,61,0.3) !important; }
       `}</style>
 
-      <div style={{ padding: "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 28, animation: "fadeUp 0.4s ease both" }}>
-          <button className="action-btn" onClick={onBack} style={{
-            background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", color: "#8b949e",
-            borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontSize: 12,
-            fontFamily: "'Roboto', sans-serif", display: "flex", alignItems: "center", gap: 6,
-          }}>Back</button>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 600, color: "#e2e8f0", fontFamily: "'Roboto', sans-serif", letterSpacing: "-0.5px" }}>
-              Anomaly Deep Dive
-            </h1>
-            <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, letterSpacing: 1 }}>
-              {anomalies.length} ANOMALIES  {usingFallback ? "FALLBACK DATA" : "FASTAPI DATA"}
-            </div>
-          </div>
-          <div style={{ marginLeft: "auto", display: "flex", gap: 12 }}>
+      <PageHeader 
+        title="Anomaly Deep Dive" 
+        subtitle={`${anomalies.length} anomalies detected`} 
+        usingFallback={usingFallback}
+      />
+
+      <div style={{ padding: "0 32px 32px", maxWidth: 1200, margin: "0 auto" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12, marginBottom: 20, marginTop: 24, animation: "fadeUp 0.4s ease both" }}>
+          <div style={{ display: "flex", gap: 12 }}>
             {byCluster.map((c) => (
               <div key={c.id} style={{
                 background: "rgba(15, 23, 42, 0.6)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",

@@ -46,45 +46,79 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
     }}>
       {/* Logo */}
       <div style={{
-        height: 72,
-        padding: collapsed ? "0" : "0 20px",
+        height: 80,
+        padding: "0 20px",
         borderBottom: "1px solid #1e1e2e",
         display: "flex", alignItems: "center",
         justifyContent: collapsed ? "center" : "space-between",
-        gap: 10,
         boxSizing: "border-box",
+        background: "rgba(255,255,255,0.02)",
       }}>
-        {!collapsed && (
-          <div style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
-            <div style={{ fontSize: 15, fontFamily: "'Roboto', sans-serif", fontWeight: 900, color: "#e2e8f0", letterSpacing: 1.5 }}>SORTISKEOS</div>
-            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: 3, textTransform: "uppercase", marginTop: 2, fontWeight: 500 }}>Log Analysis</div>
-          </div>
-        )}
-        {collapsed && (
-          <div style={{
-            width: 32, height: 32, borderRadius: 8,
-            background: "linear-gradient(135deg,#7c3aed,#4c1d95)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, boxShadow: "0 0 14px rgba(124,58,237,0.3)",
-          }}>⚡</div>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <img 
+            src="/logo.png" 
+            alt="SortisKeos Logo" 
+            style={{ 
+              width: collapsed ? 36 : 40, 
+              height: collapsed ? 36 : 40, 
+              borderRadius: "50%",
+              objectFit: "cover",
+              boxShadow: "0 0 20px rgba(124, 58, 237, 0.2)",
+              transition: "all 0.3s ease",
+            }} 
+          />
+          {!collapsed && (
+            <div style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+              <div style={{ 
+                fontSize: 18, 
+                fontFamily: "'Roboto', sans-serif", 
+                fontWeight: 800, 
+                color: "#f8fafc", 
+                letterSpacing: -0.5,
+                lineHeight: 1
+              }}>SortisKeos</div>
+              <div style={{ 
+                fontSize: 10, 
+                color: "#7c3aed", 
+                letterSpacing: 1.5, 
+                textTransform: "uppercase", 
+                marginTop: 4, 
+                fontWeight: 600,
+                opacity: 0.8
+              }}>Log Analysis System</div>
+            </div>
+          )}
+        </div>
         {!collapsed && (
           <button onClick={() => setCollapsed(true)} style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: "#64748b", fontSize: 20, padding: 4,
-            display: "flex", alignItems: "center",
-          }}>‹</button>
+            background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)", 
+            cursor: "pointer", color: "#64748b", fontSize: 16, padding: "4px 8px", borderRadius: 6,
+            display: "flex", alignItems: "center", transition: "all 0.2s ease",
+          }} onMouseEnter={e => e.currentTarget.style.color = "#e2e8f0"}
+             onMouseLeave={e => e.currentTarget.style.color = "#64748b"}>
+            ‹
+          </button>
         )}
       </div>
 
-      {/* Expand button when collapsed */}
+      {/* Toggle area below logo (collapsed only) */}
       {collapsed && (
-        <button onClick={() => setCollapsed(false)} style={{
-          background: "none", border: "none", cursor: "pointer",
-          color: "#64748b", fontSize: 14, padding: "10px 0",
-          display: "flex", alignItems: "center", justifyContent: "center",
+        <div style={{ 
+          padding: "8px 0", 
+          display: "flex", 
+          justifyContent: "center",
           borderBottom: "1px solid #1e1e2e",
-        }}>›</button>
+          background: "rgba(255,255,255,0.01)"
+        }}>
+          <button onClick={() => setCollapsed(false)} style={{
+            background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)", 
+            cursor: "pointer", color: "#64748b", fontSize: 16, padding: "4px 12px", borderRadius: 6,
+            display: "flex", alignItems: "center", transition: "all 0.2s ease",
+          }} onMouseEnter={e => e.currentTarget.style.color = "#e2e8f0"}
+             onMouseLeave={e => e.currentTarget.style.color = "#64748b"}>
+            ›
+          </button>
+        </div>
       )}
 
       {/* Nav items */}
@@ -153,8 +187,8 @@ function Sidebar({ active, onNavigate, collapsed, setCollapsed, health }) {
               {health?.elasticsearch ? "ELASTICSEARCH" : "LOCAL MODE"}
             </span>
           </div>
-          <div>{health?.elasticsearch ? "localhost:9200" : "ml/collected_logs/*.json"}</div>
-          <div style={{ marginTop: 2, opacity: 0.5 }}>{health?.mode === "local" ? "JSON fallback active" : "v8.11.0"}</div>
+          <div style={{ fontWeight: 500 }}>{health?.elasticsearch ? "localhost:9200" : "Standalone Repository"}</div>
+          <div style={{ marginTop: 2, opacity: 0.6 }}>{health?.mode === "local" ? "Processing fallback data" : "v2.4.1 (Stable)"}</div>
         </div>
       )}
       {collapsed && (
@@ -287,8 +321,7 @@ export default function App() {
         }}>
           {health?.mode === "local" && (
             <div style={{
-              position: "sticky",
-              top: 0,
+              position: "relative",
               zIndex: 250,
               padding: "12px 24px",
               background: "linear-gradient(90deg, rgba(245,158,11,0.18), rgba(230,115,75,0.12))",

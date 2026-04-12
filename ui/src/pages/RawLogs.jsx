@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchLogs } from "../api";
+import PageHeader from "../components/PageHeader.jsx";
 
 function formatTime(value) {
   if (!value) return "Unknown";
@@ -90,70 +91,69 @@ export default function RawLogs() {
   }, [filter, search]);
 
   return (
-    <div style={{ padding: "32px", maxWidth: 1180, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, marginBottom: 28, animation: "fadeSlideUp 0.5s ease both", flexWrap: "wrap" }}>
-        <div>
-          <h1 style={{ fontSize: 24, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "-0.5px" }}>
-            Raw Log Stream
-          </h1>
-          <p style={{ color: "#64748b", fontSize: 13, marginTop: 6, letterSpacing: "0.2px", lineHeight: 1.5 }}>
-            Clean event table for locally collected system logs and live backend log data.
-          </p>
-        </div>
+    <>
+      <PageHeader 
+        title="Raw Log Stream" 
+        subtitle="Clean event table for collected logs" 
+        usingFallback={logs.length === 0 && !loading && search === "" && filter === "ALL"}
+        actions={
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <input
+              type="text"
+              placeholder="Search logs"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "1px solid #1e1e2e",
+                background: "rgba(13, 13, 20, 0.55)",
+                color: "#fff",
+                outline: "none",
+                width: 180,
+                fontSize: 12,
+              }}
+            />
+            <select
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "1px solid #1e1e2e",
+                background: "rgba(13, 13, 20, 0.55)",
+                color: "#e2e8f0",
+                outline: "none",
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              <option value="ALL">All Levels</option>
+              <option value="ERROR">Errors</option>
+              <option value="WARN">Warnings</option>
+              <option value="INFO">Info</option>
+            </select>
+            <button
+              onClick={loadData}
+              disabled={loading}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "1px solid #1e1e2e",
+                background: "rgba(255,255,255,0.03)",
+                color: loading ? "#64748b" : "#e2e8f0",
+                cursor: loading ? "default" : "pointer",
+                fontSize: 12,
+              }}
+            >
+              ↻ Refresh
+            </button>
+          </div>
+        }
+      />
 
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <input
-            type="text"
-            placeholder="Search messages or sources"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid #1e1e2e",
-              background: "rgba(13, 13, 20, 0.55)",
-              color: "#fff",
-              outline: "none",
-              width: 240,
-              fontSize: 13,
-            }}
-          />
-          <select
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid #1e1e2e",
-              background: "rgba(13, 13, 20, 0.55)",
-              color: "#e2e8f0",
-              outline: "none",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
-            <option value="ALL">All Levels</option>
-            <option value="ERROR">Errors</option>
-            <option value="WARN">Warnings</option>
-            <option value="INFO">Info</option>
-          </select>
-          <button
-            onClick={loadData}
-            disabled={loading}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid #1e1e2e",
-              background: "rgba(255,255,255,0.03)",
-              color: loading ? "#64748b" : "#e2e8f0",
-              cursor: loading ? "default" : "pointer",
-              fontSize: 13,
-            }}
-          >
-            Refresh
-          </button>
-        </div>
-      </header>
+      <div style={{ padding: "0 32px 32px", maxWidth: 1200, margin: "0 auto", fontFamily: "'Roboto', sans-serif" }}>
+        <div style={{ height: 32 }} />
 
       <div style={{
         background: "rgba(19, 19, 31, 0.42)",
@@ -239,5 +239,6 @@ export default function RawLogs() {
         )}
       </div>
     </div>
+    </>
   );
 }
