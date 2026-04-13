@@ -1,3 +1,4 @@
+import hmac
 import os
 import time
 from collections import defaultdict, deque
@@ -13,13 +14,29 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.api_key = os.getenv('API_KEY', '').strip()
         self.exempt_paths = {'/health', '/docs', '/openapi.json', '/redoc'}
+        self._failed_attempts: DefaultDict[str, Deque[float]] = defaultdict(deque)
 
     async def dispatch(self, request: Request, call_next):
         if not self.api_key or request.url.path in self.exempt_paths:
             return await call_next(request)
 
+        ip = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+        now = time.monotonic()
+        recent_failures = self._failed_attempts[ip]
+
+        while recent_failures and now - recent_failures[0] >= 300:
+            recent_failures.popleft()
+
+        if len(recent_failures) >= 5:
+            return JSONResponse(
+                status_code=429,
+                content={'detail': 'Too many failed attempts. Try again in 5 minutes.'},
+                headers={"Retry-After": "300"}
+            )
+
         provided_key = request.headers.get('x-api-key', '').strip()
-        if provided_key != self.api_key:
+        if not hmac.compare_digest(provided_key, self.api_key):
+            recent_failures.append(now)
             return JSONResponse(
                 status_code=401,
                 content={'detail': 'Invalid or missing API key.'},

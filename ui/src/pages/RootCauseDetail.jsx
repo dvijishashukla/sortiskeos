@@ -21,15 +21,7 @@ const MODEL_STATS = [
   { label: "Run mode",      value: "Live API" },
 ];
  
-function formatTime(value) {
-  if (!value) return "Unknown";
-  const parsed = new Date(value);
-  if (!Number.isNaN(parsed.getTime())) {
-    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-  }
-  if (typeof value === "string" && value.length >= 8) return value.slice(0, 8);
-  return String(value);
-}
+import { formatTimeShort as formatTime } from "../utils/timeFormat.js";
  
 function ScoreBar({ score, max = 0.2 }) {
   const pct = Math.min(100, (Math.abs(score) / max) * 100);

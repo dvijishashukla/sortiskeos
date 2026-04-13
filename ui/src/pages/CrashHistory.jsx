@@ -36,7 +36,8 @@ export default function CrashHistory() {
             <div key={i} style={{ position: "relative", marginBottom: 40 }}>
               <div style={{
                 position: "absolute", left: -37, top: 4, width: 12, height: 12,
-                borderRadius: "50%", background: "#7c3aed", border: "2px solid #0d0d14"
+                borderRadius: "50%", background: c.type === "CRASH" ? "#ef4444" : "#f59e0b", border: "2px solid #0d0d14",
+                boxShadow: `0 0 8px ${c.type === "CRASH" ? "#ef444480" : "#f59e0b80"}`
               }} />
               
               <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
@@ -54,9 +55,19 @@ export default function CrashHistory() {
               }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 20, marginBottom: 16 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <h3 style={{ fontSize: 16, fontWeight: 600, color: "#ef4444", margin: "0 0 6px 0", letterSpacing: "0.3px" }}>
-                      Automated Root Cause
-                    </h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 6px 0" }}>
+                      <span style={{ 
+                        background: c.type === "CRASH" ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)",
+                        color: c.type === "CRASH" ? "#ef4444" : "#f59e0b",
+                        border: `1px solid ${c.type === "CRASH" ? "rgba(239, 68, 68, 0.3)" : "rgba(245, 158, 11, 0.3)"}`,
+                        padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase"
+                      }}>
+                        {c.type === "CRASH" ? "Actual Crash" : "System Issue"}
+                      </span>
+                      <h3 style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "0.3px" }}>
+                        Automated Root Cause
+                      </h3>
+                    </div>
                     <div style={{
                       color: "#64748b",
                       fontSize: 13,

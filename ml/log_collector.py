@@ -65,8 +65,7 @@ EVENT_ID_DESCRIPTIONS = {
 SHUTDOWN_EVENT_IDS = {
     41:   "Kernel-Power: unexpected shutdown",
     6008: "EventLog: previous shutdown was unexpected",
-    1074: "User initiated shutdown/restart",
-    6006: "Clean shutdown",
+    1001: "BugCheck: Windows stop error (BSOD)",
 }
 
 
@@ -76,8 +75,8 @@ SHUTDOWN_EVENT_IDS = {
 def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list:
     """
     Read Windows Event Logs (System + Application channels).
-    Finds the last unexpected shutdown event (Event ID 41 or 6008)
-    and collects all events within window_minutes before it.
+    Finds the last unexpected shutdown event (Event ID 41, 6008, 1001)
+    and collects all events within window_minutes before it and 5 mins after.
     """
     try:
         import win32evtlog
@@ -89,6 +88,58 @@ def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list:
     records  = []
     channels = ["System", "Application","Security"]
 
+    # First define the crash anchor across all channels
+    shutdown_time = None
+    
+    # Check System channel first for boot/shutdown events
+    log.info("Searching for crash anchor in System log...")
+    handle = None
+    try:
+        handle = win32evtlog.OpenEventLog(None, "System")
+        flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+        
+        while not shutdown_time:
+            events = win32evtlog.ReadEventLog(handle, flags, 0)
+            if not events:
+                break
+            for event in events:
+                event_id = event.EventID & 0xFFFF
+                if event_id in SHUTDOWN_EVENT_IDS:
+                    shutdown_time = event.TimeGenerated
+                    log.info(f"Found crash anchor event {event_id} at {shutdown_time}")
+                    break
+            if shutdown_time:
+                break
+                
+        # If still no shutdown, look for boot event (6005)
+        if not shutdown_time:
+            win32evtlog.CloseEventLog(handle)
+            handle = win32evtlog.OpenEventLog(None, "System")
+            while True:
+                events = win32evtlog.ReadEventLog(handle, flags, 0)
+                if not events:
+                    break
+                for event in events:
+                    event_id = event.EventID & 0xFFFF
+                    if event_id == 6005:
+                        shutdown_time = event.TimeGenerated
+                        log.info(f"Using boot event (6005) as fallback anchor at {shutdown_time}")
+                        break
+                if shutdown_time:
+                    break
+    except Exception as e:
+        log.error(f"Error finding anchor: {e}")
+    finally:
+        if handle:
+            win32evtlog.CloseEventLog(handle)
+
+    if not shutdown_time:
+        shutdown_time = datetime.now()
+        log.warning("No anchor found, using current time.")
+
+    window_start = shutdown_time - timedelta(minutes=window_minutes)
+    window_end = shutdown_time + timedelta(minutes=5)
+
     for channel in channels:
         log.info(f"Reading Windows Event Log channel: {channel}")
         handle = None
@@ -97,50 +148,20 @@ def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list:
             flags  = (win32evtlog.EVENTLOG_BACKWARDS_READ |
                       win32evtlog.EVENTLOG_SEQUENTIAL_READ)
 
-            shutdown_time = None
-
-            # First pass: find the last shutdown/crash event
-            while True:
-                events = win32evtlog.ReadEventLog(handle, flags, 0)
-                if not events:
-                    break
-                for event in events:
-                    event_id = event.EventID & 0xFFFF
-                    if event_id in SHUTDOWN_EVENT_IDS:
-                        shutdown_time = event.TimeGenerated
-                        log.info(
-                            f"Found shutdown event {event_id} "
-                            f"at {shutdown_time}"
-                        )
-                        break
-                if shutdown_time:
-                    break
-
-            # Default: use 1 hour ago if no shutdown event found
-            if not shutdown_time:
-                shutdown_time = datetime.now() - timedelta(hours=1)
-                log.warning("No shutdown event found, using last 1 hour as window.")
-
-            window_start = shutdown_time - timedelta(minutes=window_minutes)
-
-            # Second pass: collect events inside the time window
-            win32evtlog.CloseEventLog(handle)
-            handle = win32evtlog.OpenEventLog(None, channel)
-
             stop_channel_scan = False
             while True:
                 events = win32evtlog.ReadEventLog(handle, flags, 0)
                 if not events:
                     break
                 for event in events:
-                    event_time = event.TimeGenerated.replace(tzinfo=None)
                     event_id = event.EventID & 0xFFFF
-
+                    event_time = event.TimeGenerated.replace(tzinfo=None)
+                    
                     if event_time < window_start:
                         stop_channel_scan = True
                         break
 
-                    if event_time <= shutdown_time:
+                    if event_time <= window_end:
                         message = _extract_message(event, channel, win32evtlogutil)
                         records.append({
                             "@timestamp": event_time.isoformat(),

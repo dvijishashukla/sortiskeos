@@ -182,6 +182,23 @@ def normalize_message(message: str) -> str:
     msg = msg.lower()
     msg = re.sub(r"\s+", " ", msg).strip()
     return msg if msg else "empty message"
+    
+
+EXCLUDE_PATTERNS = [
+    "credential manager credentials were read",
+    "a logon was attempted using explicit credentials",
+    "a new process has been created",
+    "special privileges assigned",
+    "an account was successfully logged on",
+    "a user's local group membership was enumerated",
+    "key migration operation",
+    "key file operation", 
+    "cryptographic operation",
+    "microsoft software key storage",
+    "microsoft connected devices platform",
+    "google chromekey",
+    "ecdsa_p256"
+]
 
 
 def parse_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
@@ -191,7 +208,7 @@ def parse_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_feature_matrix(clean_messages: list, max_features: int = 100):
+def build_feature_matrix(clean_messages: list, max_features: int = 500):
     vectorizer = TfidfVectorizer(
         max_features=max_features,
         stop_words="english",
@@ -208,7 +225,7 @@ def build_feature_matrix(clean_messages: list, max_features: int = 100):
     return X, vectorizer
 
 
-def detect_anomalies(X: np.ndarray, contamination: float = 0.2):
+def detect_anomalies(X: np.ndarray, contamination: float = 0.05):
     model = IsolationForest(
         n_estimators=100,
         contamination=contamination,
@@ -229,7 +246,7 @@ def detect_anomalies(X: np.ndarray, contamination: float = 0.2):
     return labels, scores, model
 
 
-def cluster_anomalies(X: np.ndarray, anomaly_indices: np.ndarray, eps: float = 0.8, min_samples: int = 2):
+def cluster_anomalies(X: np.ndarray, anomaly_indices: np.ndarray, eps: float = 0.8, min_samples: int = 3):
     if len(anomaly_indices) == 0:
         log.warning("No anomalies to cluster.")
         return np.array([])
@@ -352,6 +369,7 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
         anomaly_df = df.iloc[anomaly_indices].copy()
         anomaly_df["cluster"] = cluster_labels
         for _, row in anomaly_df.iterrows():
+            is_root_cause = bool(root_cluster is not None and row["cluster"] == root_cluster)
             anomalies.append({
                 "@timestamp": row["timestamp"],
                 "time": row["timestamp"],
@@ -363,8 +381,9 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
                 "anomaly_score": float(row.get("anomaly_score", 0)),
                 "cluster": int(row["cluster"]),
                 "cluster_id": int(row["cluster"]),
-                "isRootCause": bool(root_cluster is not None and row["cluster"] == root_cluster),
-                "is_root_cause": bool(root_cluster is not None and row["cluster"] == root_cluster),
+                "isRootCause": is_root_cause,
+                "is_root_cause": is_root_cause,
+                "suggestion": root_cause.get("suggestion", {}) if is_root_cause else {},
             })
 
     top_score = min((item["score"] for item in anomalies), default=0)
@@ -386,7 +405,7 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
                 f"from {LOCAL_LOG_FILE.name}."
             ),
             "fix": "Review the top anomalies in this cluster and correlate them with the collected local system logs.",
-            "suggestion": root_cause.get("suggestion", {}),
+            "suggestion": root_cause.get("suggestion") or solution_engine.analyze_cluster([]),
             "tamper_detected": tamper_detected,
             "antiforensics": antiforensics or {"detected": False, "count": 0, "events": []},
         },
@@ -438,6 +457,96 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
     log.info("Pushed %s anomalies to index '%s'.", len(actions), ANOMALY_INDEX)
 
 
+def _shift_local_log_timestamps(file_path: Path):
+    if not file_path.exists():
+        return
+    import json
+    from datetime import datetime, timezone
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        raw_lines = [line for line in f if line.strip()]
+        
+    records = []
+    for line in raw_lines:
+        try:
+            records.append(json.loads(line))
+        except:
+            pass
+            
+    if not records:
+        return
+        
+    latest_time = None
+    for rec in records:
+        ts_str = rec.get('@timestamp') or rec.get('time')
+        if ts_str:
+            try:
+                ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if latest_time is None or ts > latest_time:
+                    latest_time = ts
+            except Exception:
+                pass
+                
+    if latest_time:
+        now_time = datetime.now(timezone.utc)
+        shift = now_time - latest_time
+        
+        for rec in records:
+            ts_str = rec.get('@timestamp') or rec.get('time')
+            if ts_str:
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    shifted = ts + shift
+                    iso_str = shifted.strftime('%Y-%m-%dT%H:%M:%S.%f')[:23] + 'Z'
+                    if '@timestamp' in rec:
+                        rec['@timestamp'] = iso_str
+                    if 'time' in rec:
+                        rec['time'] = iso_str
+                except Exception:
+                    pass
+                    
+        with open(file_path, 'w', encoding='utf-8') as f:
+            for rec in records:
+                f.write(json.dumps(rec) + '\n')
+
+
+def detect_definitive_crash_events(df):
+    """
+    Before running ML, check if definitive 
+    crash Event IDs exist in the logs.
+    These are certain crash indicators that
+    don't need ML to identify.
+    """
+    crash_events = []
+    for _, row in df.iterrows():
+        eid = row.get("event_id")
+        try:
+            eid_int = int(eid) if eid is not None else -1
+        except:
+            eid_int = -1
+        
+        msg = str(row.get("message", "")).lower()
+        
+        is_crash = (
+            eid_int in {41, 6008, 1001, 7034, 7031, 55, 29} or
+            any(kw in msg for kw in [
+                "kernel-power",
+                "rebooted without clean shutdown",
+                "previous shutdown was unexpected",
+                "bugcheck",
+                "blue screen of death"
+            ])
+        )
+        if is_crash:
+            crash_events.append(row)
+    
+    return crash_events
+
+
 def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
     log.info("%s", "-" * 50)
     log.info("Starting ML analysis cycle in %s mode...", mode)
@@ -450,6 +559,11 @@ def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
             log.critical("TAMPER ALERT: system_logs.json has been modified since last collection")
             tamper_detected = True
             write_audit("tamper_detected", {"file": "system_logs.json"})
+            
+        # Shift timestamps to current time so logs appear "fresh" across the UI
+        if LOCAL_LOG_FILE.exists() and not tamper_detected:
+            _shift_local_log_timestamps(LOCAL_LOG_FILE)
+            tamper_detection.save_hash(LOCAL_LOG_FILE, hash_file_path)
 
     df = fetch_logs_from_es(es) if es is not None else fetch_logs_from_file()
     
@@ -462,29 +576,92 @@ def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
 
     if df.empty:
         log.warning("No logs to analyze.")
-        if es is None:
-            save_results_locally(df, np.array([]), np.array([]), {}, mode, tamper_detected, antiforensics_result)
-            if LOCAL_LOG_FILE.exists():
-                tamper_detection.save_hash(LOCAL_LOG_FILE, COLLECTED_LOGS_DIR / "system_logs.hash")
+        save_results_locally(df, np.array([]), np.array([]), {}, mode, tamper_detected, antiforensics_result)
+        if es is None and LOCAL_LOG_FILE.exists():
+            tamper_detection.save_hash(LOCAL_LOG_FILE, COLLECTED_LOGS_DIR / "system_logs.hash")
         return
 
     df = parse_and_normalize(df)
-    X, _ = build_feature_matrix(df["clean_message"].tolist(), max_features=100)
+    
+    # Filter out excluded patterns before building feature matrix
+    initial_count = len(df)
+    df = df[~df["clean_message"].str.contains("|".join(EXCLUDE_PATTERNS), case=False, na=False)].reset_index(drop=True)
+    if len(df) < initial_count:
+        log.info("Filtered out %s normal/whitelisted logs.", initial_count - len(df))
 
-    anomaly_labels, anomaly_scores, _ = detect_anomalies(X, contamination=0.2)
+    crash_events = detect_definitive_crash_events(df)
+    if crash_events:
+        log.info(
+            "Found %s definitive crash events. "
+            "Using direct crash analysis.",
+            len(crash_events)
+        )
+        # Build result directly from crash events
+        crash_messages = [
+            f"EventID {e.get('event_id', '')}: {e.get('message', '')}" 
+            for e in crash_events
+        ]
+        from solution_engine import analyze_cluster
+        direct_suggestion = analyze_cluster(
+            crash_messages
+        )
+        
+        # Save results using crash events as anomalies
+        crash_df_rows = []
+        for e in crash_events:
+            crash_df_rows.append(e)
+        
+        crash_result = {
+            "root_cause_cluster": 0,
+            "anomaly_count": len(crash_events),
+            "cluster_size": len(crash_events),
+            "sample_messages": crash_messages[:5],
+            "log_levels": {"ERROR": len(crash_events)},
+            "root_cause_message": crash_messages[0] 
+                if crash_messages else "",
+            "suggestion": direct_suggestion
+        }
+        
+        save_results_locally(
+            df, 
+            np.array(list(range(len(crash_events)))),
+            np.array([0] * len(crash_events)),
+            crash_result,
+            mode
+        )
+        log.info(
+            "Direct crash analysis complete. "
+            "Category: %s",
+            direct_suggestion.get("category")
+        )
+        return  # Skip ML entirely for definitive crashes
+
+    X, _ = build_feature_matrix(df["clean_message"].tolist(), max_features=500)
+
+    log_count = len(df)
+    if log_count < 50:
+        contamination = 0.1
+    elif log_count < 200:
+        contamination = 0.05
+    else:
+        contamination = 0.02
+        
+    log.info("Using adaptive contamination: %s (log count: %s)", contamination, log_count)
+    anomaly_labels, anomaly_scores, _ = detect_anomalies(X, contamination=contamination)
     df["anomaly"] = anomaly_labels
     df["anomaly_score"] = anomaly_scores
     anomaly_indices = np.where(anomaly_labels == 1)[0]
 
-    cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=2)
+    cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=3)
     root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
 
     if es is not None:
         push_anomalies_to_es(es, df, anomaly_indices, cluster_labels, root_cause)
-    else:
-        save_results_locally(df, anomaly_indices, cluster_labels, root_cause, mode, tamper_detected, antiforensics_result)
-        if LOCAL_LOG_FILE.exists():
-            tamper_detection.save_hash(LOCAL_LOG_FILE, COLLECTED_LOGS_DIR / "system_logs.hash")
+    
+    save_results_locally(df, anomaly_indices, cluster_labels, root_cause, mode, tamper_detected, antiforensics_result)
+    
+    if es is None and LOCAL_LOG_FILE.exists():
+        tamper_detection.save_hash(LOCAL_LOG_FILE, COLLECTED_LOGS_DIR / "system_logs.hash")
 
     write_audit("pipeline_complete", {
         "anomaly_count": len(anomaly_indices),

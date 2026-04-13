@@ -17,6 +17,8 @@ def format_log(hit: Dict[str, Any], *, source_is_hit: bool = True) -> Dict[str, 
         'score': source.get('score', source.get('anomaly_score', 0)),
         'isRootCause': source.get('isRootCause', source.get('is_root_cause', False)),
         'cluster': source.get('cluster', source.get('cluster_id', '')),
+        'rootCause': source.get('rootCause', ''),
+        'suggestion': source.get('suggestion', {}),
     }
 
 

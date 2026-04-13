@@ -15,6 +15,52 @@ from data_access import (
 router = APIRouter(prefix='/dashboard', tags=['dashboard'])
 
 
+def get_crash_window():
+    # Try to find crash anchor from raw logs
+    logs = get_local_logs()
+    if not logs:
+        return None, None, None
+    
+    crash_ids = {41, 6008, 1001, 6006, "41", "6008", "1001", "6006"}
+    crash_keywords = [
+        "unexpected shutdown",
+        "previous shutdown was unexpected", 
+        "kernel power",
+        "bugcheck",
+        "blue screen"
+    ]
+    
+    # Find most recent crash marker log
+    crash_log = None
+    for log in logs:
+        eid = str(log.get("event_id") or log.get("EventID") or "")
+        msg = str(log.get("message") or "").lower()
+        is_crash = (
+            eid in crash_ids or
+            any(kw in msg for kw in crash_keywords)
+        )
+        if is_crash:
+            crash_log = log
+            break
+    
+    # Fallback to most recent log if no crash found
+    if not crash_log:
+        crash_log = logs[0] if logs else None
+    if not crash_log:
+        return None, None, None
+    
+    crash_time = (crash_log.get("@timestamp") or crash_log.get("time"))
+    if not crash_time:
+        return None, None, None
+    
+    ct = datetime.fromisoformat(crash_time.replace("Z", "+00:00"))
+    if ct.tzinfo is None:
+        ct = ct.replace(tzinfo=timezone.utc)
+    
+    window_start = ct - timedelta(hours=3)
+    window_end = ct + timedelta(minutes=30)
+    return crash_time, window_start, window_end
+
 def empty_stats() -> Dict[str, Any]:
     return {
         'totalCrashes': 0,
@@ -112,6 +158,17 @@ def rootcause_empty_state(description: str, fix: str) -> Dict[str, Any]:
     }
 
 
+def determine_event_type(source: Dict[str, Any]) -> str:
+    message = str(source.get('message', '')).lower()
+    event_id = str(source.get('event_id') or source.get('eventId', ''))
+    
+    if event_id in ('41', '1001'):
+        return 'CRASH'
+    if any(phrase in message for phrase in ('power loss', 'bugcheck', 'unexpected shutdown', 'did not shut down cleanly')):
+        return 'CRASH'
+    return 'ISSUE'
+
+
 def infer_label(messages: List[str]) -> str:
     if any('disk' in message or 'i/o' in message for message in messages):
         return 'Disk I/O'
@@ -125,42 +182,86 @@ def infer_label(messages: List[str]) -> str:
 @router.get('/stats')
 async def get_dashboard_stats(request: Request) -> Dict[str, Any]:
     es = getattr(request.app.state, 'es', None)
+    crash_time, window_start, window_end = get_crash_window()
+    
+    # Priority: Always read ML results from local JSON first for summary fields
+    summary = get_local_summary()
+    anomaly_count = summary.get('anomaly_count', 0)
+    root_cause = summary.get('root_cause_message', '')
+    suggestion = summary.get('suggestion', {})
+    tamper_detected = summary.get('tamper_detected', False)
+    antiforensics = summary.get('antiforensics', {'detected': False, 'count': 0, 'events': []})
+
     if not await is_es_available(es):
         logs = get_local_logs()
-        anomalies = get_local_anomalies()
-        summary = get_local_summary()
         error_logs = [item for item in logs if str(item.get('level', '')).upper() == 'ERROR']
-        last_crash = split_timestamp(error_logs[0].get('@timestamp') if error_logs else None)
-        root_cause = summary.get('root_cause_message') or ''
-        if not root_cause:
-            root_event = next((item for item in anomalies if item.get('isRootCause') or item.get('is_root_cause')), None)
-            root_cause = root_event.get('message', '') if root_event else ''
-        return {
-            'totalCrashes': len(error_logs),
+        crashes_list = [item for item in error_logs if determine_event_type(item) == 'CRASH']
+        issues_list = [item for item in error_logs if determine_event_type(item) == 'ISSUE']
+        last_crash = split_timestamp(crashes_list[0].get('@timestamp') if crashes_list else (error_logs[0].get('@timestamp') if error_logs else None))
+        
+        resp = {
+            'totalCrashes': len(crashes_list),
+            'totalIssues': len(issues_list),
             'lastCrash': last_crash,
             'rootCause': root_cause,
-            'anomalyCount': len(anomalies),
-            'tamper_detected': summary.get('tamper_detected', False),
-            'antiforensics': summary.get('antiforensics', {'detected': False, 'count': 0, 'events': []}),
+            'suggestion': suggestion,
+            'anomalyCount': anomaly_count or len(get_local_anomalies()),
+            'tamper_detected': tamper_detected,
+            'antiforensics': antiforensics,
         }
+        if crash_time:
+            resp['crash_time'] = crash_time
+            resp['window_start'] = window_start.isoformat()
+            resp['window_end'] = window_end.isoformat()
+        return resp
 
     try:
-        crash_count_response = await es.count(
-            index=SYSTEM_LOGS_INDEX,
-            body={'query': {'term': {'level.keyword': 'ERROR'}}},
-        )
+        # Properly compute via ES count queries rather than limiting to Top 1000
+        crash_query = {
+            "bool": {
+                "filter": [
+                    {"term": {"level.keyword": "ERROR"}},
+                    {"bool": {
+                        "should": [
+                            {"terms": {"event_id": [41, 1001, "41", "1001"]}},
+                            {"terms": {"eventId": [41, 1001, "41", "1001"]}},
+                            {"match_phrase": {"message": "power loss"}},
+                            {"match_phrase": {"message": "bugcheck"}},
+                            {"match_phrase": {"message": "unexpected shutdown"}},
+                            {"match_phrase": {"message": "did not shut down cleanly"}}
+                        ],
+                        "minimum_should_match": 1
+                    }}
+                ]
+            }
+        }
+        
+        crash_count_resp = await es.count(index=SYSTEM_LOGS_INDEX, body={"query": crash_query})
+        crash_count = crash_count_resp.get('count', 0)
+        
+        error_count_resp = await es.count(index=SYSTEM_LOGS_INDEX, body={'query': {'terms': {'level.keyword': ['ERROR', 'CRITICAL']}}})
+        error_count = error_count_resp.get('count', 0)
+        
+        issues_count = error_count - crash_count
+
+        anomaly_query = {'query': {'bool': {'filter': [{'range': {'@timestamp': {'gte': window_start.isoformat(), 'lte': window_end.isoformat()}}}]}}} if window_start else {'query': {'match_all': {}}}
         anomaly_count_response = await es.count(
             index=ANOMALIES_INDEX,
-            body={'query': {'match_all': {}}},
+            body=anomaly_query,
         )
         last_crash_response = await es.search(
             index=SYSTEM_LOGS_INDEX,
             body={
-                'size': 1,
+                'size': 50,
                 'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
-                'query': {'term': {'level.keyword': 'ERROR'}},
+                'query': {'terms': {'level.keyword': ['ERROR', 'CRITICAL']}},
             },
         )
+        
+        last_crash_hit = last_crash_response.get('hits', {}).get('hits', [])
+        # Find the most recent actual CRASH, fallback to first error if none
+        actual_crash_hit = next((h for h in last_crash_hit if determine_event_type(h.get('_source', {})) == 'CRASH'), last_crash_hit[0] if last_crash_hit else None)
+        
         root_cause_response = await es.search(
             index=ANOMALIES_INDEX,
             body={
@@ -170,49 +271,70 @@ async def get_dashboard_stats(request: Request) -> Dict[str, Any]:
             },
         )
 
-        last_crash_hit = last_crash_response.get('hits', {}).get('hits', [])
         root_cause_hit = root_cause_response.get('hits', {}).get('hits', [])
 
-        last_crash_source = last_crash_hit[0].get('_source', {}) if last_crash_hit else {}
+        last_crash_source = actual_crash_hit.get('_source', {}) if actual_crash_hit else {}
         root_cause_source = root_cause_hit[0].get('_source', {}) if root_cause_hit else {}
 
         last_crash = split_timestamp(last_crash_source.get('@timestamp') or last_crash_source.get('time'))
         root_cause = root_cause_source.get('rootCause') or root_cause_source.get('message') or ''
 
-        return {
-            'totalCrashes': crash_count_response.get('count', 0),
+        resp = {
+            'totalCrashes': crash_count,
+            'totalIssues': issues_count,
             'lastCrash': last_crash,
             'rootCause': root_cause,
-            'anomalyCount': anomaly_count_response.get('count', 0),
-            'tamper_detected': False,
-            'antiforensics': {'detected': False, 'count': 0, 'events': []},
+            'suggestion': suggestion,
+            'anomalyCount': anomaly_count or anomaly_count_response.get('count', 0),
+            'tamper_detected': tamper_detected,
+            'antiforensics': antiforensics,
         }
+        if crash_time:
+            resp['crash_time'] = crash_time
+            resp['window_start'] = window_start.isoformat()
+            resp['window_end'] = window_end.isoformat()
+        return resp
     except Exception:
-        return empty_stats()
+        return {
+            'totalCrashes': 0,
+            'totalIssues': 0,
+            'lastCrash': {'date': '', 'time': ''},
+            'rootCause': root_cause,
+            'suggestion': suggestion,
+            'anomalyCount': anomaly_count,
+            'tamper_detected': tamper_detected,
+            'antiforensics': antiforensics,
+        }
 
 
 @router.get('/timeline')
 async def get_dashboard_timeline(request: Request) -> List[Dict[str, Any]]:
     es = getattr(request.app.state, 'es', None)
+    crash_time, window_start, window_end = get_crash_window()
     window_minutes = 60
     bucket_minutes = 5
 
     if not await is_es_available(es):
         logs = get_local_logs()
         anomalies = get_local_anomalies()
+        if window_start:
+            anomalies = [a for a in anomalies if parse_timestamp(a.get('@timestamp') or a.get('time')) and window_start <= parse_timestamp(a.get('@timestamp') or a.get('time')) <= window_end]
         crash_logs = [
             item for item in logs
             if str(item.get('level', '')).upper() == 'ERROR'
         ]
-        crash_time = parse_timestamp(
-            (crash_logs[0] if crash_logs else {}).get('@timestamp')
-            or (crash_logs[0] if crash_logs else {}).get('time')
-        )
-        if crash_time is None:
-            crash_time = datetime.now(timezone.utc)
-
-        start = crash_time - timedelta(minutes=window_minutes)
-        end = crash_time + timedelta(minutes=window_minutes)
+        if window_start:
+            start = window_start
+            end = window_end
+        else:
+            local_crash_time = parse_timestamp(
+                (crash_logs[0] if crash_logs else {}).get('@timestamp')
+                or (crash_logs[0] if crash_logs else {}).get('time')
+            )
+            if local_crash_time is None:
+                local_crash_time = datetime.now(timezone.utc)
+            start = local_crash_time - timedelta(minutes=window_minutes)
+            end = local_crash_time + timedelta(minutes=window_minutes)
         timeline_map = {
             start + timedelta(minutes=offset * bucket_minutes): []
             for offset in range(int(((end - start).total_seconds() // 60) / bucket_minutes) + 1)
@@ -246,17 +368,20 @@ async def get_dashboard_timeline(request: Request) -> List[Dict[str, Any]]:
         body={
             'size': 1,
             'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
-            'query': {'term': {'level.keyword': 'ERROR'}},
+            'query': {'terms': {'level.keyword': ['ERROR', 'CRITICAL']}},
         },
     )
     crash_hits = crash_response.get('hits', {}).get('hits', [])
     crash_source = (crash_hits[0] if crash_hits else {}).get('_source', {})
-    crash_time = parse_timestamp(crash_source.get('@timestamp') or crash_source.get('time'))
-    if crash_time is None:
-        crash_time = datetime.now(timezone.utc)
-
-    start = crash_time - timedelta(minutes=window_minutes)
-    end = crash_time + timedelta(minutes=window_minutes)
+    if window_start:
+        start = window_start
+        end = window_end
+    else:
+        local_crash_time = parse_timestamp(crash_source.get('@timestamp') or crash_source.get('time'))
+        if local_crash_time is None:
+            local_crash_time = datetime.now(timezone.utc)
+        start = local_crash_time - timedelta(minutes=window_minutes)
+        end = local_crash_time + timedelta(minutes=window_minutes)
     body = {
         'size': 0,
         'query': {
@@ -304,6 +429,8 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
     if not await is_es_available(es):
         logs = get_local_logs()
         anomalies = get_local_anomalies()
+        if window_start:
+            anomalies = [a for a in anomalies if parse_timestamp(a.get('@timestamp') or a.get('time')) and window_start <= parse_timestamp(a.get('@timestamp') or a.get('time')) <= window_end]
         summary = get_local_summary()
         crash_logs = [item for item in logs if str(item.get('level', '')).upper() == 'ERROR'][:50]
         anomaly_count = len(anomalies)
@@ -319,6 +446,7 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
                     'rootCause': root_message or item.get('message') or '',
                     'anomalies': anomaly_count,
                     'score': score,
+                    'type': determine_event_type(item),
                 }
             )
         return crashes
@@ -326,7 +454,7 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
     body = {
         'size': 50,
         'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}],
-        'query': {'term': {'level.keyword': 'ERROR'}},
+        'query': {'terms': {'level.keyword': ['ERROR', 'CRITICAL']}},
     }
 
     try:
@@ -363,6 +491,7 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
                         if matching_anomaly is not None
                         else source.get('anomaly_score', source.get('score', 0))
                     ),
+                    'type': determine_event_type(source),
                 }
             )
         return crashes
@@ -372,30 +501,36 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
 
 @router.get('/rootcause')
 async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
-    """
-    Get the root cause analysis: the highest-scoring anomaly cluster.
-    Returns the cluster with the most critical anomalies.
-    If ES is unreachable, returns a graceful empty structure.
-    """
     es = getattr(request.app.state, 'es', None)
+    crash_time, window_start, window_end = get_crash_window()
+    
+    # Priority: ALWAYS read ml_results.json first for summary/suggestion data
+    summary = get_local_summary()
+    local_anomalies = get_local_anomalies()
+    
+    # Pre-populate return structure from JSON if available
+    cluster_id = int(summary.get('root_cause_cluster', 0) or 0)
+    label = summary.get('label', 'No data')
+    anomaly_count = int(summary.get('anomaly_count', 0) or 0)
+    top_score = float(summary.get('top_score', 0) or 0)
+    description = summary.get('description', '')
+    fix = summary.get('fix', '')
+    suggestion = summary.get('suggestion', {})
+    
     if not await is_es_available(es):
-        anomalies = get_local_anomalies()
-        summary = get_local_summary()
-        if not anomalies:
+        if not local_anomalies:
             return rootcause_empty_state(
                 'Local Mode is active, but no anomaly results have been generated yet.',
                 'Run the ML pipeline once to create ml_results.json from the collected logs.',
             )
 
-        cluster_id = int(summary.get('root_cause_cluster', 0) or 0)
         cluster_events = [
-            item for item in anomalies
+            item for item in local_anomalies
             if int(item.get('cluster', item.get('cluster_id', 0)) or 0) == cluster_id
         ]
         if not cluster_events:
-            cluster_events = anomalies[:10]
+            cluster_events = local_anomalies[:10]
 
-        top_score = min(float(item.get('score', item.get('anomaly_score', 0)) or 0) for item in cluster_events)
         events = []
         for index, event in enumerate(cluster_events[:10]):
             events.append({
@@ -406,112 +541,55 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
                 'score': float(event.get('score', event.get('anomaly_score', 0)) or 0),
             })
 
-        anomaly_count = int(summary.get('anomaly_count', len(cluster_events)) or len(cluster_events))
-        confidence = min(99, int(30 + len(cluster_events) * 5 + abs(top_score) * 100))
-        messages = [str(item.get('message', '')).lower() for item in cluster_events]
-        description = summary.get('description') or (
-            f'Local Mode identified {len(cluster_events)} anomalies in cluster {cluster_id}.'
-        )
-        fix = summary.get('fix') or 'Review the top anomalies in this cluster and correlate them with the local system logs.'
         return {
             'clusterId': cluster_id,
-            'label': summary.get('label') or infer_label(messages),
-            'confidence': confidence,
-            'anomalyCount': anomaly_count,
-            'topScore': top_score,
+            'label': label if label != 'No data' else infer_label([e['message'].lower() for e in events]),
+            'confidence': min(99, int(30 + len(cluster_events) * 5 + abs(top_score) * 100)),
+            'anomalyCount': anomaly_count or len(cluster_events),
+            'topScore': top_score or (min(e['score'] for e in events) if events else 0),
             'events': events,
-            'description': description,
-            'fix': fix,
-            'suggestion': summary.get('suggestion', {}),
+            'description': description or f'Local Mode identified {len(cluster_events)} anomalies.',
+            'fix': fix or 'Review the top anomalies in this cluster.',
+            'suggestion': suggestion,
         }
 
     try:
-        # Fetch anomalies with scores < -0.05 (anomalous events)
+        # Fetch actual matching anomalies from ES to populate the EVENT LIST ONLY
         body = {
             'size': 100,
             'sort': [{'anomaly_score': {'order': 'asc'}}],
-            'query': {'match_all': {}},
+            'query': {'bool': {'filter': [{'range': {'@timestamp': {'gte': window_start.isoformat(), 'lte': window_end.isoformat()}}}]}} if window_start else {'match_all': {}},
         }
 
         response = await es.search(index=ANOMALIES_INDEX, body=body)
         hits = response.get('hits', {}).get('hits', [])
 
-        if not hits:
-            return rootcause_empty_state(
-                'No anomalies found in the current data',
-                'The system is operating normally',
-            )
-
-        # Group events by cluster
-        clusters: Dict[int, List[Dict[str, Any]]] = {}
-        for hit in hits:
-            source = hit.get('_source', {})
-            cluster_id = int(source.get('cluster_id', source.get('cluster', 0)) or 0)
-            if cluster_id not in clusters:
-                clusters[cluster_id] = []
-            clusters[cluster_id].append(source)
-
-        # Find cluster with lowest average score (most anomalous)
-        best_cluster_id = None
-        best_cluster_data = None
-        best_avg_score = 0
-
-        for cluster_id, events in clusters.items():
-            avg_score = sum(float(e.get('anomaly_score', e.get('score', 0)) or 0) for e in events) / len(events)
-            if best_cluster_id is None or avg_score < best_avg_score:
-                best_cluster_id = cluster_id
-                best_cluster_data = events
-                best_avg_score = avg_score
-
-        if best_cluster_id is None or not best_cluster_data:
-            return rootcause_empty_state(
-                'Could not identify root cause cluster',
-                'More anomaly data is needed for analysis',
-            )
-
-        # Build event list
-        top_score = min(float(e.get('anomaly_score', e.get('score', 0)) or 0) for e in best_cluster_data)
         events = []
-        for i, event in enumerate(best_cluster_data[:10]):  # Top 10 events from cluster
+        for i, hit in enumerate(hits[:10]):
+            source = hit.get('_source', {})
             events.append({
-                'time': event.get('@timestamp') or event.get('time') or '',
+                'time': source.get('@timestamp') or source.get('time') or '',
                 'eventId': str(i + 1),
-                'source': 'Root cause' if event.get('is_root_cause', event.get('isRootCause')) else 'Backend log',
-                'message': event.get('message') or event.get('log') or '',
-                'score': float(event.get('anomaly_score', event.get('score', 0)) or 0),
+                'source': 'Root cause' if source.get('is_root_cause', source.get('isRootCause')) else 'Backend log',
+                'message': source.get('message') or source.get('log') or '',
+                'score': float(source.get('anomaly_score', source.get('score', 0)) or 0),
             })
 
-        # Calculate confidence based on anomaly count and score
-        anomaly_count = len(best_cluster_data)
-        confidence = min(99, int(30 + anomaly_count * 5 + abs(top_score) * 100))
-
-        # Determine label based on common anomaly patterns
-        messages = [e.get('message', '').lower() for e in best_cluster_data]
-        label = infer_label(messages)
-
-        description = f'{anomaly_count} anomalies detected in cluster {best_cluster_id} with average score {best_avg_score:.3f}'
-        fix = f'Review the top anomalies in this cluster and correlate them with system logs to determine the underlying cause.'
-
-        suggestion = {}
-        for e in best_cluster_data:
-            if e.get('is_root_cause', e.get('isRootCause')):
-                suggestion = e.get('suggestion', {})
-                break
-
+        # Return combined state: Summary data from JSON, event list from ES (if available)
         return {
-            'clusterId': best_cluster_id,
+            'clusterId': cluster_id,
             'label': label,
-            'confidence': confidence,
-            'anomalyCount': anomaly_count,
+            'confidence': min(99, int(30 + len(events) * 5 + abs(top_score) * 100)),
+            'anomalyCount': anomaly_count or len(hits),
             'topScore': top_score,
             'events': events,
-            'description': description,
+            'description': description or f'{anomaly_count} anomalies detected in cluster {cluster_id}.',
             'fix': fix,
             'suggestion': suggestion,
         }
 
     except Exception:
         return rootcause_empty_state(
-            'An error occurred while querying the current data source',
-            'Please check the backend logs and try again',
+            description or 'Search failed',
+            fix or 'Check background logs'
         )

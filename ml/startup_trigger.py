@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -156,28 +157,53 @@ def open_dashboard() -> None:
 
 def main() -> int:
     logger.info('Startup trigger started.')
-    logger.info('Cooldown window is set to %s seconds.', COOLDOWN_SECONDS)
+    
+    # 1. Wait for Elasticsearch (urllib check, max 60 seconds)
+    logger.info('Waiting for Elasticsearch to be ready (max 60s)...')
+    max_wait = 60
+    waited = 0
+    es_up = False
+    while waited < max_wait:
+        try:
+            with urllib.request.urlopen('http://localhost:9200', timeout=3) as response:
+                if response.status == 200:
+                    logger.info('Elasticsearch is up.')
+                    es_up = True
+                    break
+        except Exception:
+            pass
+        
+        logger.info('Waiting for ES... %ss', waited)
+        time.sleep(5)
+        waited += 5
 
-    now = datetime.now(timezone.utc)
-    last_run = read_last_run()
-    if is_in_cooldown(last_run, now):
-        return 0
-
-    logger.info('Waiting for Elasticsearch at %s', ES_URL)
-    if not wait_for_elasticsearch():
-        return 0
-
+    if not es_up:
+        logger.error('Elasticsearch did not become reachable within 60 seconds.')
+        # Proceeding anyway as fallback might use local logs
+    
+    # 2. Run log_collector.py
     if not run_script(LOG_COLLECTOR):
         logger.error('Stopping because log_collector.py did not complete successfully.')
         return 1
 
+    # 3. Run ml_pipeline.py
     if not run_script(ML_PIPELINE):
         logger.error('Stopping because ml_pipeline.py did not complete successfully.')
         return 1
 
+    # 4. Open browser
     open_dashboard()
+    
     write_last_run(datetime.now(timezone.utc))
     logger.info('Startup trigger completed successfully.')
+    
+    print("\n" + "="*60)
+    print("REGISTRATION REQUIRED: Run these commands as Administrator:")
+    print("="*60)
+    print("Task 1: schtasks /create /tn \"Sortiskeos-Services\" /tr \"c:\\sortiskeos\\run_all.bat\" /sc onlogon /rl highest /f")
+    print("Task 2: schtasks /create /tn \"Sortiskeos-Analysis\" /tr \"python c:\\sortiskeos\\ml\\startup_trigger.py\" /sc onlogon /rl highest /delay 00:03:00 /f")
+    print("="*60 + "\n")
+    
     return 0
 
 

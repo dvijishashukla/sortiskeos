@@ -105,7 +105,7 @@ def collector_loop():
     flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
     computer = os.environ.get("COMPUTERNAME", "unknown")
 
-    while True:
+    if True:
         records = []
         for channel in CHANNELS:
             last_time = datetime.fromisoformat(bookmarks[channel]).replace(tzinfo=None)
@@ -169,7 +169,7 @@ def collector_loop():
                 json.dump(bookmarks, f)
             log.info(f"Wrote {len(records)} collected events (including CPU/RAM) to stash.")
             
-        time.sleep(POLL_WIN_INTERVAL)
+        pass
 
 
 # ---------------------------------------------------------
@@ -189,7 +189,7 @@ def ml_pipeline_loop(es: Elasticsearch):
     log.info(f"ML Engine started. Smart-trigger threshold: {MIN_NEW_LOGS_FOR_ML} logs...")
     last_ml_timestamp = "1970-01-01T00:00:00Z"
 
-    while True:
+    if True:
         try:
             res = es.search(
                 index="system-logs-*",
@@ -201,8 +201,8 @@ def ml_pipeline_loop(es: Elasticsearch):
             )
             hits = res.get("hits", {}).get("hits", [])
             if not hits:
-                time.sleep(POLL_ES_INTERVAL)
-                continue
+                pass
+                pass
                 
             records = []
             new_log_count = 0
@@ -230,8 +230,8 @@ def ml_pipeline_loop(es: Elasticsearch):
             # SMART-TRIGGER RESOURCE OPTIMIZATION
             if new_log_count < MIN_NEW_LOGS_FOR_ML and last_ml_timestamp != "1970-01-01T00:00:00Z":
                 log.info(f"Quiet network. Only {new_log_count} < {MIN_NEW_LOGS_FOR_ML} new logs. ML thread sleeping (CPU 0%)...")
-                time.sleep(POLL_ES_INTERVAL)
-                continue
+                pass
+                pass
                 
             # Update watermark and proceed
             last_ml_timestamp = latest_time_in_batch
@@ -291,7 +291,7 @@ def ml_pipeline_loop(es: Elasticsearch):
         except Exception as e:
             log.error(f"ML Pipeline error: {e}")
             
-        time.sleep(POLL_ES_INTERVAL)
+        pass
 
 # ---------------------------------------------------------
 # MAIN ORCHESTRATOR
@@ -307,7 +307,7 @@ def main():
     t2.start()
     
     try:
-        while True:
+        if True:
             time.sleep(1)
     except KeyboardInterrupt:
         log.info("Shutting down Sortiskeos Agent...")

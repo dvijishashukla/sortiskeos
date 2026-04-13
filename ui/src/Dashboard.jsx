@@ -7,6 +7,7 @@ import { fetchStats, fetchTimeline, fetchCrashes, fetchAnomalies, triggerPipelin
 import { Toast } from "./App.jsx";
 import ReportExport from "./components/ReportExport.jsx";
 import PageHeader from "./components/PageHeader.jsx";
+import { formatTimeShort as formatDisplayTime, formatTimeLabel as formatChartTimeLabel } from "./utils/timeFormat.js";
 
 function useCountUp(target, duration = 1000) {
   const [count, setCount] = useState(0);
@@ -54,30 +55,11 @@ function formatDisplayDate(dateString) {
   return parsed.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
 }
 
-function formatDisplayTime(timeString) {
-  if (!timeString) return "Unknown time";
-  const normalized = typeof timeString === "string" && timeString.length <= 8 ? `1970-01-01T${timeString}` : timeString;
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return String(timeString);
-  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-}
-
-function formatChartTimeLabel(timeString) {
-  if (!timeString) return "";
-  const normalized = typeof timeString === "string" && timeString.length <= 8 ? `1970-01-01T${timeString}` : timeString;
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return "";
-  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-}
-
 function formatTimelineData(items) {
   if (!Array.isArray(items) || items.length === 0) return TIMELINE_DATA;
   return items.map((item, index) => {
     const rawHour = typeof item?.hour === "string" ? item.hour : "";
-    const parsed = rawHour ? new Date(rawHour) : null;
-    const label = parsed && !Number.isNaN(parsed.getTime())
-      ? parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
-      : `${String(index).padStart(2, "0")}:00`;
+    const label = rawHour ? formatChartTimeLabel(rawHour) : `${String(index).padStart(2, "0")}:00`;
     return { hour: label, score: Math.abs(Number(item?.score) || 0) };
   });
 }
@@ -104,7 +86,7 @@ function formatAnomalyRows(items) {
   return items.map((item, index) => ({
     id: index + 1, time: formatDisplayTime(item?.time), level: item?.level || "INFO",
     message: item?.message || "No message available", score: Number(item?.score) || 0,
-    isRootCause: Boolean(item?.isRootCause), cluster: item?.cluster ?? "",
+    isRootCause: Boolean(item?.isRootCause), cluster: item?.cluster ?? "", suggestion: item?.suggestion || {}, rootCause: item?.rootCause || "",
   }));
 }
 
@@ -173,10 +155,11 @@ function summarizeRootCause(message) {
 function buildStats(stats) {
   return [
     { label: "Hardware Pulse", value: "ACTIVE", sub: "tracking psutil host telemetry" },
-    { label: "Total Crashes", value: String(stats?.totalCrashes ?? 0), sub: "historical backend data" },
+    { label: "Crash Events", value: String(stats?.totalCrashes ?? 0), sub: "actual system failures" },
+    { label: "Issues in Crash Window", value: String(stats?.totalIssues ?? 0), sub: "logged error events" },
     { label: "Last Crash", value: formatDisplayDate(stats?.lastCrash?.date), sub: formatDisplayTime(stats?.lastCrash?.time) },
     { label: "DBSCAN Focus", value: stats?.rootCause ? String(stats.rootCause).slice(0, 16) : "None", sub: stats?.rootCause ? "latest event" : "no recent data" },
-    { label: "Anomalies", value: String(stats?.anomalyCount ?? 0), sub: "scored extreme (< -0.05)" },
+    { label: "Anomalies in Crash Window", value: String(stats?.anomalyCount ?? 0), sub: "scored extreme (< -0.05)" },
   ];
 }
 
@@ -244,7 +227,20 @@ function StatCard({ label, value, sub, index }) {
       <span style={{ fontSize: 11, color: "#64748b", letterSpacing: "1.5px", textTransform: "uppercase", fontWeight: 500 }}>{label}</span>
       
       <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-        <span style={{ fontSize: 26, fontFamily: "'Roboto', sans-serif", fontWeight: 600, color: "#e2e8f0", lineHeight: 1.1, letterSpacing: "-0.5px" }}>
+        <span style={{
+          fontSize: 26,
+          fontFamily: "'Roboto', sans-serif",
+          fontWeight: 600,
+          color: "#e2e8f0",
+          lineHeight: 1.1,
+          letterSpacing: "-0.5px",
+          ...(label.toUpperCase() === "DBSCAN FOCUS" 
+            ? { overflow: 'hidden', 
+                textOverflow: 'ellipsis', 
+                whiteSpace: 'nowrap', 
+                maxWidth: '100%' } 
+            : {})
+        }}>
           {isNumberFormat ? animatedCount : value}
         </span>
         {isNumberFormat && targetNumber > 0 && (
@@ -270,6 +266,7 @@ export default function Dashboard({ onNavigate = () => {} }) {
   const [crashHistory, setCrashHistory] = useState(CRASH_HISTORY);
   const [anomalies, setAnomalies] = useState(MOCK_ANOMALIES);
   const [rawStats, setRawStats] = useState(null);
+  const [crashTime, setCrashTime] = useState(null);
   
   const [usingFallback, setUsingFallback] = useState(false);
   const [pipelineStatus, setPipelineStatus] = useState(null);
@@ -279,9 +276,11 @@ export default function Dashboard({ onNavigate = () => {} }) {
   const [antiforensics, setAntiforensics] = useState({ detected: false, count: 0, events: [] });
 
   // Dashboard initialization
-  useEffect(() => { loadDashboard(); }, []);
+  useEffect(() => {
+    fetchAllData();
+  }, []);
 
-  const loadDashboard = async () => {
+  const fetchAllData = async () => {
     setIsLoadingDashboard(true);
     try {
       const [statsData, timelineResponse, crashesResponse, anomaliesResponse] = await Promise.all([
@@ -290,6 +289,9 @@ export default function Dashboard({ onNavigate = () => {} }) {
 
       const hasLivePayload = [statsData, timelineResponse, crashesResponse, anomaliesResponse].some((item) => item != null);
       setStats(buildStats(statsData));
+      
+      const cTime = statsData?.crash_time || null;
+      setCrashTime(cTime);
       setTimelineData(formatTimelineData(timelineResponse));
       setCrashHistory(formatCrashRows(crashesResponse));
       setAnomalies(formatAnomalyRows(anomaliesResponse));
@@ -350,6 +352,20 @@ export default function Dashboard({ onNavigate = () => {} }) {
         {percent.toFixed(0)}%
       </text>
     );
+  };
+
+
+  const handleReanalyze = async () => {
+    setIsLoadingDashboard(true);
+    try {
+      await fetch(`${API_BASE}/pipeline/run`, {
+        method: 'POST'
+      });
+    } catch(e) {}
+    setTimeout(() => {
+      fetchAllData();
+      setIsLoadingDashboard(false);
+    }, 10000);
   };
 
   const handleTriggerPipeline = async () => {
@@ -464,15 +480,26 @@ export default function Dashboard({ onNavigate = () => {} }) {
                 ⇩ Export Report
               </button>
 
-              <button className="action-btn" onClick={loadDashboard} disabled={isLoadingDashboard} style={{
-                background: "rgba(255,255,255,0.03)", border: "1px solid #1e1e2e", borderRadius: 6, color: isLoadingDashboard ? "#64748b" : "#64748b",
-                cursor: isLoadingDashboard ? "default" : "pointer", padding: "6px 10px", fontSize: 13, display: "flex", alignItems: "center", gap: 6,
+              <button className="action-btn" onClick={handleReanalyze} disabled={isLoadingDashboard} style={{
+                background: "rgba(124, 58, 237, 0.1)", border: "1px solid #7c3aed33", borderRadius: 6, color: isLoadingDashboard ? "#64748b" : "#7c3aed",
+                cursor: isLoadingDashboard ? "default" : "pointer", padding: "6px 14px", fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6,
               }}>
-                ↻ Refresh
+                ↻ Re-analyze
               </button>
             </>
           }
         />
+        {crashTime && (
+          <div style={{
+            fontSize: '13px',
+            color: '#64748b',
+            marginTop: '-24px',
+            marginBottom: '24px',
+            paddingLeft: '32px'
+          }}>
+            Crash Report ? {new Date(crashTime).toLocaleString()}
+          </div>
+        )}
 
         <div style={{ maxWidth: 1200, margin: "0 auto", padding: "0 32px 32px", display: "flex", flexDirection: "column", gap: 32 }}>
           <div style={{ height: 24 }} />
@@ -521,24 +548,51 @@ export default function Dashboard({ onNavigate = () => {} }) {
               <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>
                 Root Cause Identified
               </div>
-              <div style={{
-                fontSize: 18, color: "#e2e8f0", lineHeight: 1.5, maxWidth: "100%",
-                overflowWrap: "anywhere", wordBreak: "break-word",
-              }}>
-                {summarizeRootCause(latestRootCause?.message)}
-              </div>
-              <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                {latestRootCause && [
-                  `Level: ${latestRootCause.level}`,
-                  `Cluster Node: C${latestRootCause.cluster || "-"}`,
-                  `Severity Vector: ${latestRootCause.score.toFixed(3)}`,
-                ].map((tag) => (
-                  <span key={tag} style={{
-                    background: "rgba(124, 58, 237, 0.1)", color: "#7c3aed", border: "1px solid #1e1e2e",
-                    borderRadius: 4, padding: "4px 12px", fontSize: 12, fontFamily: "'Roboto Mono', monospace", letterSpacing: 0.5,
-                  }}>{tag}</span>
-                ))}
-              </div>
+              
+              {(() => {
+                const s = rawStats?.suggestion?.category ? rawStats.suggestion : (latestRootCause?.suggestion || {});
+                const isAnalyzing = !s.category || s.category === "Unknown/Generic Error";
+                
+                return (
+                  <>
+                    <div style={{ fontSize: 24, fontWeight: 800, color: "#e2e8f0", marginBottom: 4 }}>
+                      {isAnalyzing ? "Analyzing..." : s.category}
+                    </div>
+                    
+                    {isAnalyzing && (
+                      <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12, fontStyle: "italic" }}>
+                        Run Re-analyze for fresh results
+                      </div>
+                    )}
+
+                    <div style={{ fontSize: 15, color: "#94a3b8", marginBottom: 12 }}>
+                      {s.likely_cause || "System is processing detected anomalies to determine specific failure vectors."}
+                    </div>
+
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+                      <span style={{
+                        background: "rgba(124, 58, 237, 0.2)", color: "#a78bfa",
+                        borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 700
+                      }}>
+                        {s.confidence || "Medium"} CONFIDENCE
+                      </span>
+                      <span style={{ color: "#475569", fontSize: 12 }}>•</span>
+                      <span style={{ color: "#94a3b8", fontSize: 12 }}>Cluster C{latestRootCause?.cluster ?? "-"}</span>
+                      <span style={{ color: "#475569", fontSize: 12 }}>•</span>
+                      <span style={{ color: "#94a3b8", fontSize: 12 }}>Severity {latestRootCause?.score?.toFixed(3) || "0.000"}</span>
+                    </div>
+
+                    {s.investigate?.[0] && (
+                      <div style={{ 
+                        fontSize: 13, color: "#7c3aed", background: "rgba(124, 58, 237, 0.05)", 
+                        padding: "8px 12px", borderRadius: 6, border: "1px solid rgba(124, 58, 237, 0.1)"
+                      }}>
+                        <span style={{ fontWeight: 700 }}>HINT:</span> {s.investigate[0]}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
 
@@ -557,8 +611,8 @@ export default function Dashboard({ onNavigate = () => {} }) {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
                 {stats.slice(0,3).map((s, i) => <StatCard key={s.label} {...s} index={i} />)}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-                {stats.slice(3,5).map((s, i) => <StatCard key={s.label} {...s} index={i + 3} />)}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                {stats.slice(3,6).map((s, i) => <StatCard key={s.label} {...s} index={i + 3} />)}
               </div>
             </div>
 
@@ -586,7 +640,7 @@ export default function Dashboard({ onNavigate = () => {} }) {
                     </PieChart>
                   </ResponsiveContainer>
                   <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", textAlign: "center", pointerEvents: "none" }}>
-                    <div style={{ fontSize: 24, fontWeight: 700, color: "#e2e8f0" }}>{clusterData.length > 0 ? anomalies.length : "0"}</div>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: "#e2e8f0" }}>{rawStats?.anomalyCount ?? 0}</div>
                     <div style={{ fontSize: 10, color: "#64748b", letterSpacing: 1 }}>TOTAL</div>
                   </div>
                </div>

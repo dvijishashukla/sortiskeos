@@ -18,15 +18,7 @@ const ALL_ANOMALIES = [
 
 const CLUSTER_COLORS = { 1: "#3b82f6", 2: "#e6734b", 3: "#a855f7" };
 
-function formatTime(value) {
-  if (!value) return "Unknown";
-  const parsed = new Date(value);
-  if (!Number.isNaN(parsed.getTime())) {
-    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-  }
-  if (typeof value === "string" && value.length >= 8) return value.slice(0, 8);
-  return String(value);
-}
+import { formatTimeShort as formatTime } from "../utils/timeFormat.js";
 
 function formatAnomalies(items) {
   if (!Array.isArray(items) || items.length === 0) return ALL_ANOMALIES;

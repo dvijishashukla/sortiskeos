@@ -2,20 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchLogs } from "../api";
 import PageHeader from "../components/PageHeader.jsx";
 
-function formatTime(value) {
-  if (!value) return "Unknown";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value);
-  return parsed.toLocaleString([], {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}
+import { formatTimeFull as formatTime } from "../utils/timeFormat.js";
 
 function normalizeLogs(items) {
   if (!Array.isArray(items)) return [];
