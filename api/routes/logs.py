@@ -7,16 +7,47 @@ from data_access import SYSTEM_LOGS_INDEX, get_local_logs, is_es_available
 router = APIRouter(tags=['logs'])
 
 
+def normalize_cluster_value(source: Dict[str, Any]) -> int | str:
+    """
+    Return a UI-friendly cluster id.
+    - If ES document stores DBSCAN raw `cluster_id` (0-based), convert to 1-based.
+    - If only `cluster` exists, preserve it as-is.
+    - Noise (-1, '-1', or '-') is rendered as 'noise'.
+    """
+    if 'cluster_id' in source:
+        try:
+            raw = int(source.get('cluster_id'))
+        except (TypeError, ValueError):
+            return 'noise'
+        if raw < 0:
+            return 'noise'
+        return raw + 1
+
+    cluster_value = source.get('cluster', '')
+    if cluster_value in ('-1', '-'):
+        return 'noise'
+    try:
+        parsed = int(cluster_value)
+    except (TypeError, ValueError):
+        return cluster_value if cluster_value is not None else 'noise'
+    if parsed < 0:
+        return 'noise'
+    return parsed
+
+
 def format_log(hit: Dict[str, Any], *, source_is_hit: bool = True) -> Dict[str, Any]:
     source = hit.get('_source', {}) if source_is_hit else hit
+    # Prefer the model-native anomaly_score when present; legacy docs may carry
+    # score=0 while anomaly_score has the actual value.
+    raw_score = source.get('anomaly_score', source.get('score', 0))
     return {
         'time': source.get('@timestamp') or source.get('time') or '',
         'level': source.get('level') or '',
         'source': source.get('source') or source.get('host') or 'unknown',
         'message': source.get('message') or source.get('log') or '',
-        'score': source.get('score', source.get('anomaly_score', 0)),
+        'score': raw_score,
         'isRootCause': source.get('isRootCause', source.get('is_root_cause', False)),
-        'cluster': source.get('cluster', source.get('cluster_id', '')),
+        'cluster': normalize_cluster_value(source),
         'rootCause': source.get('rootCause', ''),
         'suggestion': source.get('suggestion', {}),
     }

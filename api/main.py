@@ -17,7 +17,9 @@ from routes.audit import router as audit_router
 
 BASE_DIR = Path(__file__).resolve().parent
 API_ENV_PATH = BASE_DIR / '.env'
-load_dotenv(dotenv_path=API_ENV_PATH)
+ROOT_ENV_PATH = BASE_DIR.parent / '.env'
+load_dotenv(dotenv_path=ROOT_ENV_PATH)
+load_dotenv(dotenv_path=API_ENV_PATH, override=True)
 
 import sys
 sys.path.insert(0, str(BASE_DIR.parent / "ml"))
@@ -27,6 +29,8 @@ except ImportError:
     write_audit = lambda action, detail={}: None
 
 ES_HOST = os.getenv('ES_HOST', 'http://localhost:9200')
+ES_USER = os.getenv('ES_USER', 'elastic')
+ES_PASSWORD = os.getenv('ES_PASSWORD', '') or os.getenv('ELASTIC_PASSWORD', '')
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000').split(',')
@@ -58,7 +62,10 @@ async def audit_middleware(request, call_next):
     return await call_next(request)
 
 app.state.es_host = ES_HOST
-app.state.es = AsyncElasticsearch(ES_HOST)
+if ES_PASSWORD:
+    app.state.es = AsyncElasticsearch(ES_HOST, basic_auth=(ES_USER, ES_PASSWORD))
+else:
+    app.state.es = AsyncElasticsearch(ES_HOST)
 
 app.include_router(logs_router)
 app.include_router(anomalies_router)

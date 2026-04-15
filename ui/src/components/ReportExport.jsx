@@ -5,6 +5,8 @@
  * Becomes the ONLY visible element during window.print() via @media print CSS.
  * All data is passed as props — zero API calls.
  */
+import { summarizeRootCause } from "../utils/displayValue.js";
+
 export default function ReportExport({ anomalies, rawStats, tamperDetected, antiforensics, clusterCounts }) {
   const generated = new Date().toLocaleString([], {
     year: "numeric", month: "2-digit", day: "2-digit",
@@ -14,7 +16,7 @@ export default function ReportExport({ anomalies, rawStats, tamperDetected, anti
   // Pull structured suggestion data from rawStats if available
   const suggestion   = rawStats?.suggestion || {};
   const rootCause    = rawStats?.rootCause  || "Unknown";
-  const label        = suggestion?.label    || rootCause || "Unknown";
+  const label        = summarizeRootCause(suggestion?.label || rootCause || "Unknown");
   const likelyCause  = suggestion?.likely_cause || "No additional context available.";
   const confidence   = suggestion?.confidence   || "Low";
   const investigate  = Array.isArray(suggestion?.investigate)     ? suggestion.investigate     : [];

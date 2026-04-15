@@ -8,6 +8,7 @@ import Settings from "./pages/Settings";
 import AuditLog from "./pages/AuditLog";
 import { checkHealth } from "./api.js";
 import { useEffect } from "react";
+import { toDisplayText } from "./utils/displayValue.js";
 
 // ── Simple hash-based router (no react-router needed) ─────────────────────────
 function useRoute() {
@@ -361,7 +362,7 @@ export function Toast({ message, type, onClose }) {
       boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
       animation: 'fadeSlideUp 0.3s ease'
     }}>
-      {message}
+      {toDisplayText(message, "Operation finished")}
     </div>
   );
 }

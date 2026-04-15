@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import { fetchAnomalies } from "../api.js";
 import PageHeader from "../components/PageHeader.jsx";
+import { toDisplayNumber, toDisplayText, summarizeRootCause } from "../utils/displayValue.js";
 
 const API_BASE = (process.env.REACT_APP_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
@@ -21,17 +22,17 @@ const CLUSTER_COLORS = { 1: "#3b82f6", 2: "#e6734b", 3: "#a855f7" };
 import { formatTimeShort as formatTime } from "../utils/timeFormat.js";
 
 function formatAnomalies(items) {
-  if (!Array.isArray(items) || items.length === 0) return ALL_ANOMALIES;
+  if (!Array.isArray(items)) return ALL_ANOMALIES;
 
   return items.map((item, index) => ({
     id: index + 1,
-    time: formatTime(item?.time),
-    level: item?.level || "INFO",
+    time: formatTime(toDisplayText(item?.time, "")),
+    level: toDisplayText(item?.level, "INFO"),
     source: item?.isRootCause ? "Root cause" : "Backend log",
-    message: item?.message || "No message available",
-    score: Number(item?.score) || 0,
-    cluster: Number(item?.cluster ?? 0),
-    method: item?.isRootCause ? "FastAPI" : "FastAPI",
+    message: summarizeRootCause(toDisplayText(item?.message, "No message available")),
+    score: toDisplayNumber(item?.score, 0),
+    cluster: toDisplayNumber(item?.cluster, 0),
+    method: toDisplayText(item?.method, "IsolationForest+DBSCAN"),
   }));
 }
 

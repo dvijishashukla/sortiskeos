@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchRootCause } from "../api.js";
 import PageHeader from "../components/PageHeader.jsx";
+import { toDisplayNumber, toDisplayText, summarizeRootCause } from "../utils/displayValue.js";
  
 const DEFAULT_CLUSTER = {
   id: 2, label: "Primary - Kernel / Network", isRoot: true,
@@ -113,22 +114,22 @@ export default function RootCauseDetail({ onBack }) {
  
         if (data && data.clusterId != null) {
           setCluster({
-            id:          data.clusterId,
-            label:       data.label,
-            isRoot:      data.clusterId !== 0,
-            anomalies:   data.anomalyCount,
-            score:       data.topScore,
-            confidence:  data.confidence,
+            id:          toDisplayNumber(data.clusterId, 0),
+            label:       toDisplayText(data.label, "No data"),
+            isRoot:      toDisplayNumber(data.clusterId, 0) !== 0,
+            anomalies:   toDisplayNumber(data.anomalyCount, 0),
+            score:       toDisplayNumber(data.topScore, 0),
+            confidence:  toDisplayNumber(data.confidence, 0),
             events: (data.events || []).map((e) => ({
-              time:   formatTime(e.time),
-              id:     e.eventId || e.id || "",
-              source: e.source  || "Backend log",
-              msg:    e.message || "",
-              score:  e.score   || 0,
+              time:   formatTime(toDisplayText(e?.time, "")),
+              id:     toDisplayText(e?.eventId || e?.id, ""),
+              source: toDisplayText(e?.source, "Backend log"),
+              msg:    toDisplayText(e?.message, ""),
+              score:  toDisplayNumber(e?.score, 0),
             })),
-            description: data.description,
-            fix:         data.fix,
-            suggestion:  data.suggestion || {},
+            description: toDisplayText(data.description, ""),
+            fix:         toDisplayText(data.fix, ""),
+            suggestion:  typeof data.suggestion === "object" && data.suggestion ? data.suggestion : {},
           });
           setUsingFallback(false);
         } else {
@@ -208,7 +209,9 @@ export default function RootCauseDetail({ onBack }) {
               <ConfidenceRing pct={cluster.confidence} isRoot={cluster.isRoot} />
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 11, color: "#64748b" }}>CLUSTER #{cluster.id ?? "N/A"}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 11, color: "#64748b" }}>
+                    {cluster.id === 0 ? 'Noise candidate' : `Cluster #${cluster.id ?? 'N/A'}`}
+                  </span>
                   {cluster.isRoot && (
                     <span style={{
                       background: "rgba(124, 58, 237, 0.12)", color: "#7c3aed",
@@ -217,8 +220,8 @@ export default function RootCauseDetail({ onBack }) {
                     }}>ROOT CAUSE</span>
                   )}
                 </div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", fontFamily: "'Roboto', sans-serif" }}>{cluster.label}</div>
-                <div style={{ fontSize: 12, color: "#64748b", marginTop: 4, lineHeight: 1.5 }}>{cluster.description}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", fontFamily: "'Roboto', sans-serif" }}>{summarizeRootCause(cluster.label)}</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 4, lineHeight: 1.5 }}>{toDisplayText(cluster.description, "")}</div>
               </div>
               <div style={{ textAlign: "right", minWidth: 80 }}>
                 <div style={{ fontSize: 22, fontWeight: 600, color: cluster.isRoot ? "#7c3aed" : "#64748b", fontFamily: "'Roboto', sans-serif" }}>{cluster.anomalies}</div>
@@ -242,8 +245,8 @@ export default function RootCauseDetail({ onBack }) {
                     borderRadius: 4, padding: "1px 6px", fontSize: 10,
                     fontFamily: "monospace", textAlign: "center",
                   }}>ID {ev.id}</span>
-                  <span style={{ fontSize: 11, color: "#64748b", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.source}</span>
-                  <span style={{ fontSize: 12, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.msg}</span>
+                  <span style={{ fontSize: 11, color: "#64748b", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{toDisplayText(ev.source, "Backend log")}</span>
+                  <span style={{ fontSize: 12, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{toDisplayText(ev.msg, "")}</span>
                   <ScoreBar score={ev.score} />
                 </div>
               ))}
@@ -267,7 +270,7 @@ export default function RootCauseDetail({ onBack }) {
                         background: "rgba(124, 58, 237, 0.12)", color: "#7c3aed",
                         border: "1px solid #7c3aed33", borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 500, letterSpacing: 1
                       }}>
-                        {cluster.suggestion.category}
+                        {toDisplayText(cluster.suggestion.category, "Unknown")}
                       </span>
                       {cluster.suggestion.confidence && (
                         <span style={{
@@ -276,19 +279,19 @@ export default function RootCauseDetail({ onBack }) {
                           border: `1px solid ${cluster.suggestion.confidence === "High" ? "#ef444433" : cluster.suggestion.confidence === "Medium" ? "#f59e0b33" : "#22c55e33"}`,
                           borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 500
                         }}>
-                          {cluster.suggestion.confidence}
+                          {toDisplayText(cluster.suggestion.confidence, "Low")}
                         </span>
                       )}
                     </div>
                     
                     <div style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.5 }}>
-                      {cluster.suggestion.likely_cause}
+                      {toDisplayText(cluster.suggestion.likely_cause, "No additional context available.")}
                     </div>
 
                     {cluster.suggestion.investigate && cluster.suggestion.investigate.length > 0 && (
                       <ul style={{ margin: 0, paddingLeft: 16, color: "#e2e8f0", fontSize: 13, lineHeight: 1.6 }}>
                         {cluster.suggestion.investigate.map((item, idx) => (
-                          <li key={idx} style={{ paddingLeft: 4, marginBottom: 4 }}>{item}</li>
+                          <li key={idx} style={{ paddingLeft: 4, marginBottom: 4 }}>{toDisplayText(item, "")}</li>
                         ))}
                       </ul>
                     )}
@@ -308,9 +311,9 @@ export default function RootCauseDetail({ onBack }) {
                             whiteSpace: "nowrap"
                           }}>
                             <div style={{ overflowX: "auto" }}>
-                              <span style={{ color: "#7c3aed", marginRight: 8, opacity: 0.8 }}>$</span>{cmd}
+                              <span style={{ color: "#7c3aed", marginRight: 8, opacity: 0.8 }}>$</span>{toDisplayText(cmd, "")}
                             </div>
-                            <CopyCommandButton cmd={cmd} />
+                            <CopyCommandButton cmd={toDisplayText(cmd, "")} />
                           </div>
                         ))}
                       </div>

@@ -1,211 +1,203 @@
-import logging
+"""
+startup_trigger.py — HARDENED
+------------------------------
+Changes from original:
+  - Loads .env before spawning subprocesses so credentials are available
+  - Windows Task Scheduler XML sets <RunLevel>LeastPrivilege</RunLevel>
+    and prompts for the service account  (was defaulting to SYSTEM)
+  - Linux systemd unit runs as a dedicated 'loganalysis' user, not root
+  - HMAC key generated and stored in .env on first run if missing
+"""
+
 import os
-import subprocess
 import sys
 import time
-import webbrowser
-import urllib.request
-from datetime import datetime, timezone
+import secrets
+import logging
+import platform
+import subprocess
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-LAST_RUN_FILE = BASE_DIR / 'last_run.txt'
-LOG_FILE = BASE_DIR / 'trigger.log'
-LOG_COLLECTOR = BASE_DIR / 'log_collector.py'
-ML_PIPELINE = BASE_DIR / 'ml_pipeline.py'
-ES_URL = 'http://localhost:9200'
-DASHBOARD_URL = 'http://localhost:3000'
-ES_WAIT_SECONDS = 60
-ES_POLL_INTERVAL = 5
-COOLDOWN_SECONDS = int(os.getenv('COOLDOWN_SECONDS', '300'))
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
 
-logger = logging.getLogger('startup_trigger')
-logger.setLevel(logging.INFO)
-logger.propagate = False
-
-if not logger.handlers:
-    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-
-    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-    file_handler.setFormatter(formatter)
-
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+PROJECT_DIR   = Path(__file__).parent.resolve()
+ENV_FILE      = PROJECT_DIR.parent / ".env"     # sortiskeos-main/.env
+PYTHON        = sys.executable
+LOGSTASH_WAIT = 30
 
 
-def get_requests_module():
-    try:
-        import requests
-    except ModuleNotFoundError:
-        logger.error(
-            'The requests package is required for the Elasticsearch health check. '
-            'Install it in your active Python environment before running startup_trigger.py.'
-        )
-        return None
-    return requests
+# ── Load .env into os.environ ──────────────────────────────────────────────────
+def load_dotenv(path: Path):
+    if not path.exists():
+        log.warning(f".env not found at {path}. Copy .env.example to .env and fill it in.")
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip())
+    log.info(f"Loaded env from {path}")
 
 
-def read_last_run() -> datetime | None:
-    if not LAST_RUN_FILE.exists():
-        return None
-
-    try:
-        raw_value = LAST_RUN_FILE.read_text(encoding='utf-8').strip()
-        if not raw_value:
-            return None
-        return datetime.fromisoformat(raw_value)
-    except Exception as exc:
-        logger.warning('Could not read last run timestamp from %s: %s', LAST_RUN_FILE, exc)
-        return None
+def _ensure_hmac_key():
+    """Generate a random HMAC key if SORTISKEOS_HMAC_KEY is not set."""
+    if os.environ.get("SORTISKEOS_HMAC_KEY"):
+        return
+    key = secrets.token_hex(32)
+    log.info("Generated new SORTISKEOS_HMAC_KEY — appending to .env")
+    with open(ENV_FILE, "a") as f:
+        f.write(f"\nSORTISKEOS_HMAC_KEY={key}\n")
+    os.environ["SORTISKEOS_HMAC_KEY"] = key
 
 
-def write_last_run(now: datetime) -> None:
-    LAST_RUN_FILE.write_text(now.isoformat(), encoding='utf-8')
-    logger.info('Recorded successful run timestamp in %s', LAST_RUN_FILE)
-
-
-def is_in_cooldown(last_run: datetime | None, now: datetime) -> bool:
-    if last_run is None:
-        return False
-
-    if last_run.tzinfo is None:
-        last_run = last_run.replace(tzinfo=timezone.utc)
-
-    elapsed_seconds = (now - last_run).total_seconds()
-    if elapsed_seconds < COOLDOWN_SECONDS:
-        remaining = int(COOLDOWN_SECONDS - elapsed_seconds)
-        logger.info(
-            'Cooldown active. Last run was %s. Skipping pipeline for another %s seconds.',
-            last_run.isoformat(),
-            remaining,
-        )
-        return True
-
-    return False
-
-
-def wait_for_elasticsearch() -> bool:
-    requests = get_requests_module()
-    if requests is None:
-        return False
-
-    deadline = time.monotonic() + ES_WAIT_SECONDS
-    attempt = 1
-
-    while time.monotonic() < deadline:
-        try:
-            response = requests.get(ES_URL, timeout=5)
-            if response.ok:
-                logger.info('Elasticsearch is reachable at %s', ES_URL)
-                return True
-            logger.warning(
-                'Elasticsearch responded with status %s on attempt %s.',
-                response.status_code,
-                attempt,
-            )
-        except requests.RequestException as exc:
-            logger.warning('Elasticsearch not reachable on attempt %s: %s', attempt, exc)
-
-        attempt += 1
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        sleep_seconds = ES_POLL_INTERVAL if remaining >= ES_POLL_INTERVAL else remaining
-        logger.info('Waiting %.0f seconds before checking Elasticsearch again.', sleep_seconds)
-        time.sleep(sleep_seconds)
-
-    logger.error('Elasticsearch did not become reachable within %s seconds. Exiting cleanly.', ES_WAIT_SECONDS)
-    return False
-
-
-def run_script(script_path: Path) -> bool:
-    command = [sys.executable, str(script_path)]
-    logger.info('Running %s using %s', script_path.name, sys.executable)
-
-    try:
-        result = subprocess.run(command, cwd=str(BASE_DIR), check=False)
-    except Exception as exc:
-        logger.error('Failed to start %s: %s', script_path.name, exc)
-        return False
-
+def run_step(script_name: str, args: list = []) -> bool:
+    script_path = PROJECT_DIR / script_name
+    cmd = [PYTHON, str(script_path)] + args
+    log.info(f"Running: {' '.join(str(c) for c in cmd)}")
+    env = os.environ.copy()
+    result = subprocess.run(cmd, cwd=str(PROJECT_DIR), env=env)
     if result.returncode != 0:
-        logger.error('%s failed with exit code %s', script_path.name, result.returncode)
-        return False
-
-    logger.info('%s completed successfully.', script_path.name)
-    return True
+        log.error(f"{script_name} exited with code {result.returncode}")
+    return result.returncode == 0
 
 
-def open_dashboard() -> None:
+def main():
+    load_dotenv(ENV_FILE)
+    _ensure_hmac_key()
+
+    log.info("=" * 55)
+    log.info("  Intelligent Log Analysis — Startup Pipeline")
+    log.info("=" * 55)
+
+    log.info("Step 1/3: Collecting system logs...")
+    if not run_step("log_collector.py"):
+        log.error("Log collection failed. Aborting.")
+        sys.exit(1)
+
+    log.info(f"Step 2/3: Waiting {LOGSTASH_WAIT}s for Logstash ingestion...")
+    time.sleep(LOGSTASH_WAIT)
+
+    log.info("Step 3/3: Running ML anomaly detection...")
+    run_step("ml_pipeline.py", ["--mode", "once"])
+
+    log.info("Startup pipeline complete. Check Kibana for results.")
+
+
+# ── Windows Task Scheduler registration ───────────────────────────────────────
+def register_windows_task():
+    """
+    Register as a Windows startup task running as a NAMED SERVICE ACCOUNT,
+    not SYSTEM.  You will be prompted for the account password by schtasks.
+    """
+    script_path = PROJECT_DIR / "startup_trigger.py"
+    task_name   = "IntelligentLogAnalysis"
+    # Use the current user as the service account — change to a dedicated account
+    # for production (e.g., DOMAIN\\LogAnalysisSvc).
+    service_account = os.environ.get("LOG_ANALYSIS_USER", os.environ.get("USERNAME", ""))
+
+    xml = f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Principals>
+    <Principal id="Author">
+      <UserId>{service_account}</UserId>
+      <LogonType>Password</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Triggers>
+    <BootTrigger>
+      <Delay>PT1M</Delay>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Actions>
+    <Exec>
+      <Command>{PYTHON}</Command>
+      <Arguments>"{script_path}"</Arguments>
+      <WorkingDirectory>{PROJECT_DIR}</WorkingDirectory>
+    </Exec>
+  </Actions>
+  <Settings>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+  </Settings>
+</Task>"""
+
+    xml_file = PROJECT_DIR / "task.xml"
+    xml_file.write_text(xml, encoding="utf-16")
+    result = subprocess.run(
+        ["schtasks", "/Create", "/TN", task_name, "/XML", str(xml_file), "/F"],
+        capture_output=True, text=True
+    )
+    xml_file.unlink()
+    if result.returncode == 0:
+        log.info(f"Windows Task '{task_name}' registered as '{service_account}' (LeastPrivilege).")
+    else:
+        log.error(f"Failed: {result.stderr}")
+
+
+# ── Linux systemd service registration ────────────────────────────────────────
+def register_linux_service():
+    """
+    Install systemd service that runs as a dedicated 'loganalysis' system user
+    (not root). Creates the user if it doesn't exist.
+    """
+    svc_user = "loganalysis"
     try:
-        if hasattr(os, 'startfile'):
-            os.startfile(DASHBOARD_URL)
-            logger.info('Opened dashboard in the default browser using os.startfile: %s', DASHBOARD_URL)
-            return
+        subprocess.run(["id", svc_user], check=True, capture_output=True)
+        log.info(f"User '{svc_user}' already exists.")
+    except subprocess.CalledProcessError:
+        subprocess.run(["useradd", "--system", "--no-create-home", svc_user], check=True)
+        log.info(f"Created system user '{svc_user}'.")
+        # Give the user read access to the project directory
+        subprocess.run(["chown", "-R", f"{svc_user}:{svc_user}", str(PROJECT_DIR)], check=True)
 
-        opened = webbrowser.open(DASHBOARD_URL)
-        if opened:
-            logger.info('Opened dashboard in the default browser: %s', DASHBOARD_URL)
-        else:
-            logger.warning('Browser open request was not acknowledged for %s', DASHBOARD_URL)
-    except Exception as exc:
-        logger.warning('Failed to open dashboard URL %s: %s', DASHBOARD_URL, exc)
+    service_content = f"""[Unit]
+Description=Intelligent Log Analysis Startup Pipeline
+After=network.target docker.service
+Wants=docker.service
 
+[Service]
+Type=oneshot
+User={svc_user}
+Group={svc_user}
+ExecStartPre=/bin/sleep 60
+ExecStart={PYTHON} {PROJECT_DIR}/startup_trigger.py
+WorkingDirectory={PROJECT_DIR}
+EnvironmentFile={ENV_FILE}
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths={PROJECT_DIR}/collected_logs
 
-def main() -> int:
-    logger.info('Startup trigger started.')
-    
-    # 1. Wait for Elasticsearch (urllib check, max 60 seconds)
-    logger.info('Waiting for Elasticsearch to be ready (max 60s)...')
-    max_wait = 60
-    waited = 0
-    es_up = False
-    while waited < max_wait:
-        try:
-            with urllib.request.urlopen('http://localhost:9200', timeout=3) as response:
-                if response.status == 200:
-                    logger.info('Elasticsearch is up.')
-                    es_up = True
-                    break
-        except Exception:
-            pass
-        
-        logger.info('Waiting for ES... %ss', waited)
-        time.sleep(5)
-        waited += 5
-
-    if not es_up:
-        logger.error('Elasticsearch did not become reachable within 60 seconds.')
-        # Proceeding anyway as fallback might use local logs
-    
-    # 2. Run log_collector.py
-    if not run_script(LOG_COLLECTOR):
-        logger.error('Stopping because log_collector.py did not complete successfully.')
-        return 1
-
-    # 3. Run ml_pipeline.py
-    if not run_script(ML_PIPELINE):
-        logger.error('Stopping because ml_pipeline.py did not complete successfully.')
-        return 1
-
-    # 4. Open browser
-    open_dashboard()
-    
-    write_last_run(datetime.now(timezone.utc))
-    logger.info('Startup trigger completed successfully.')
-    
-    print("\n" + "="*60)
-    print("REGISTRATION REQUIRED: Run these commands as Administrator:")
-    print("="*60)
-    print("Task 1: schtasks /create /tn \"Sortiskeos-Services\" /tr \"c:\\sortiskeos\\run_all.bat\" /sc onlogon /rl highest /f")
-    print("Task 2: schtasks /create /tn \"Sortiskeos-Analysis\" /tr \"python c:\\sortiskeos\\ml\\startup_trigger.py\" /sc onlogon /rl highest /delay 00:03:00 /f")
-    print("="*60 + "\n")
-    
-    return 0
+[Install]
+WantedBy=multi-user.target
+"""
+    service_path = Path("/etc/systemd/system/log-analysis.service")
+    try:
+        service_path.write_text(service_content)
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+        log.info(f"Service written to {service_path}")
+        log.info("Run: sudo systemctl enable log-analysis.service")
+    except PermissionError:
+        log.error("Permission denied. Run with sudo.")
 
 
-if __name__ == '__main__':
-    raise SystemExit(main())
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--register-windows", action="store_true")
+    parser.add_argument("--register-linux",   action="store_true")
+    args = parser.parse_args()
+
+    if args.register_windows:
+        register_windows_task()
+    elif args.register_linux:
+        register_linux_service()
+    else:
+        main()

@@ -1,6 +1,26 @@
 import { useEffect, useState } from "react";
 import { fetchCrashes } from "../api";
 import PageHeader from "../components/PageHeader.jsx";
+import { toDisplayNumber, toDisplayText, summarizeRootCause } from "../utils/displayValue.js";
+
+function normalizeCrashes(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    ...item,
+    date: toDisplayText(item?.date, ""),
+    time: toDisplayText(item?.time, ""),
+    rootCause: toDisplayText(item?.rootCause, "Unknown Application Failure"),
+    type: toDisplayText(item?.type, "ISSUE"),
+    anomalies: toDisplayNumber(item?.anomalies, 0),
+    score: toDisplayNumber(item?.score, 0),
+    events: Array.isArray(item?.events)
+      ? item.events.map((evt) => ({
+          level: toDisplayText(evt?.level, "INFO"),
+          message: toDisplayText(evt?.message, "No message available"),
+        }))
+      : [],
+  }));
+}
 
 export default function CrashHistory() {
   const [crashes, setCrashes] = useState([]);
@@ -9,7 +29,7 @@ export default function CrashHistory() {
   useEffect(() => {
     async function init() {
       const data = await fetchCrashes();
-      if (data) setCrashes(data);
+      if (data) setCrashes(normalizeCrashes(data));
       setLoading(false);
     }
     init();
@@ -76,12 +96,12 @@ export default function CrashHistory() {
                       wordBreak: "break-word",
                       maxWidth: "100%",
                     }}>
-                      {c.rootCause || "Unknown Application Failure"}
+                      {summarizeRootCause(c.rootCause)}
                     </div>
                   </div>
                   <div style={{ textAlign: "right", flexShrink: 0, minWidth: 72 }}>
                     <div style={{ fontSize: 24, fontWeight: 600, color: "#e2e8f0", whiteSpace: "nowrap" }}>
-                      {Number.isFinite(c.score) ? c.score.toFixed(1) : "N/A"}
+                      {Number.isFinite(c.score) ? c.score.toFixed(3) : "N/A"}
                     </div>
                     <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: 1, whiteSpace: "nowrap" }}>Anomaly Score</div>
                   </div>
@@ -90,7 +110,7 @@ export default function CrashHistory() {
                 <div style={{ background: "rgba(13, 13, 20, 0.3)", border: "1px solid #1e1e2e", borderRadius: 8, padding: "16px" }}>
                   <div style={{ fontSize: 11, color: "#64748b", marginBottom: 12, display: "flex", justifyContent: "space-between", textTransform: "uppercase", letterSpacing: "1px", fontWeight: 600 }}>
                     <span>Associated Anomalies</span>
-                    <span>{c.anomalies || 0} Events</span>
+                    <span>{toDisplayNumber(c.anomalies, 0)} Events</span>
                   </div>
                   {c.events && c.events.length > 0 ? (
                     <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12, color: "#e2e8f0", fontFamily: "'Roboto Mono', monospace" }}>

@@ -1,4 +1,4 @@
-"""
+﻿"""
 ml_pipeline.py
 --------------
 Resilient ML pipeline for Intelligent Log Analysis.
@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import time
+import hashlib
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from audit_log import write_audit
 import numpy as np
 import pandas as pd
 from elasticsearch import Elasticsearch, helpers
+from dotenv import load_dotenv
 from sklearn.cluster import DBSCAN
 from sklearn.ensemble import IsolationForest
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -49,6 +51,11 @@ POLL_INTERVAL = 60
 ML_N_JOBS = int(os.getenv("ML_N_JOBS", "1"))
 
 BASE_DIR = Path(__file__).resolve().parent
+ROOT_ENV_FILE = BASE_DIR.parent / ".env"
+ML_ENV_FILE = BASE_DIR / ".env"
+load_dotenv(ROOT_ENV_FILE)
+load_dotenv(ML_ENV_FILE, override=True)
+
 COLLECTED_LOGS_DIR = BASE_DIR / "collected_logs"
 LOCAL_LOG_FILE = COLLECTED_LOGS_DIR / "system_logs.json"
 LOCAL_RESULTS_FILE = COLLECTED_LOGS_DIR / "ml_results.json"
@@ -62,11 +69,20 @@ def _resolve_es_host() -> str:
 
 
 def _create_es_client(es_host: str) -> Elasticsearch:
+    es_user = os.getenv("ES_USER", "elastic")
+    es_password = os.getenv("ES_PASSWORD", "") or os.getenv("ELASTIC_PASSWORD", "")
+
+    kwargs = {
+        "hosts": es_host,
+        "request_timeout": 3,
+        "max_retries": 0,
+        "retry_on_timeout": False,
+    }
+    if es_password:
+        kwargs["basic_auth"] = (es_user, es_password)
+
     return Elasticsearch(
-        es_host,
-        request_timeout=3,
-        max_retries=0,
-        retry_on_timeout=False,
+        **kwargs
     )
 
 
@@ -379,11 +395,15 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
                 "host": row.get("host", "unknown"),
                 "score": float(row.get("anomaly_score", 0)),
                 "anomaly_score": float(row.get("anomaly_score", 0)),
+                "risk_score": float(-row.get("anomaly_score", 0)) if row.get("anomaly_score", 0) < 0 else 0.0,
                 "cluster": int(row["cluster"]),
                 "cluster_id": int(row["cluster"]),
                 "isRootCause": is_root_cause,
                 "is_root_cause": is_root_cause,
                 "suggestion": root_cause.get("suggestion", {}) if is_root_cause else {},
+                "method": "IsolationForest+DBSCAN",
+                "source_log_id": row.get("es_id"),
+                "event_id": row.get("es_id"),
             })
 
     top_score = min((item["score"] for item in anomalies), default=0)
@@ -432,8 +452,15 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
     for _, row in anomaly_df.iterrows():
         cluster_id = int(row["cluster"])
         is_root_cause = bool(root_cluster is not None and cluster_id == root_cluster)
+        source_log_id = row.get("es_id")
+        source_timestamp = row.get("timestamp")
+        source_message = row.get("message", "")
+        stable_id = hashlib.sha1(
+            f"{source_log_id}|{source_timestamp}|{source_message}".encode("utf-8")
+        ).hexdigest()
         actions.append({
             "_index": ANOMALY_INDEX,
+            "_id": stable_id,
             "_source": {
                 "@timestamp": row["timestamp"],
                 "time": row["timestamp"],
@@ -443,12 +470,17 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
                 "host": row.get("host", "unknown"),
                 "score": float(row.get("anomaly_score", 0)),
                 "anomaly_score": float(row.get("anomaly_score", 0)),
+                "risk_score": float(-row.get("anomaly_score", 0)) if row.get("anomaly_score", 0) < 0 else 0.0,
                 "cluster": cluster_id,
                 "cluster_id": cluster_id,
                 "isRootCause": is_root_cause,
                 "is_root_cause": is_root_cause,
                 "rootCause": root_message if is_root_cause else "",
                 "suggestion": root_cause.get("suggestion", {}) if is_root_cause else {},
+                "method": "IsolationForest+DBSCAN",
+                "source_log_id": source_log_id,
+                "event_id": source_log_id,
+                "source_timestamp": source_timestamp,
                 "analysed_at": datetime.now().isoformat(),
             }
         })
@@ -590,51 +622,19 @@ def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
         log.info("Filtered out %s normal/whitelisted logs.", initial_count - len(df))
 
     crash_events = detect_definitive_crash_events(df)
+    crash_messages = [
+        f"EventID {e.get('event_id', '')}: {e.get('message', '')}"
+        for e in crash_events
+    ]
+    direct_suggestion = None
     if crash_events:
         log.info(
             "Found %s definitive crash events. "
-            "Using direct crash analysis.",
+            "Running ML + crash-priority fallback.",
             len(crash_events)
         )
-        # Build result directly from crash events
-        crash_messages = [
-            f"EventID {e.get('event_id', '')}: {e.get('message', '')}" 
-            for e in crash_events
-        ]
         from solution_engine import analyze_cluster
-        direct_suggestion = analyze_cluster(
-            crash_messages
-        )
-        
-        # Save results using crash events as anomalies
-        crash_df_rows = []
-        for e in crash_events:
-            crash_df_rows.append(e)
-        
-        crash_result = {
-            "root_cause_cluster": 0,
-            "anomaly_count": len(crash_events),
-            "cluster_size": len(crash_events),
-            "sample_messages": crash_messages[:5],
-            "log_levels": {"ERROR": len(crash_events)},
-            "root_cause_message": crash_messages[0] 
-                if crash_messages else "",
-            "suggestion": direct_suggestion
-        }
-        
-        save_results_locally(
-            df, 
-            np.array(list(range(len(crash_events)))),
-            np.array([0] * len(crash_events)),
-            crash_result,
-            mode
-        )
-        log.info(
-            "Direct crash analysis complete. "
-            "Category: %s",
-            direct_suggestion.get("category")
-        )
-        return  # Skip ML entirely for definitive crashes
+        direct_suggestion = analyze_cluster(crash_messages)
 
     X, _ = build_feature_matrix(df["clean_message"].tolist(), max_features=500)
 
@@ -652,8 +652,43 @@ def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
     df["anomaly_score"] = anomaly_scores
     anomaly_indices = np.where(anomaly_labels == 1)[0]
 
-    cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=3)
-    root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
+    if len(anomaly_indices) == 0 and crash_events:
+        fallback_indices = []
+        for event in crash_events:
+            idx = getattr(event, "name", None)
+            if isinstance(idx, (int, np.integer)) and 0 <= int(idx) < len(df):
+                fallback_indices.append(int(idx))
+
+        fallback_indices = sorted(set(fallback_indices))
+        if fallback_indices:
+            anomaly_indices = np.array(fallback_indices, dtype=int)
+            # Ensure fallback anomalies are visible to API filters that expect
+            # negative anomaly scores.
+            for rank, idx in enumerate(anomaly_indices):
+                current = float(df.at[idx, "anomaly_score"])
+                if current >= 0:
+                    df.at[idx, "anomaly_score"] = -(0.05 + (0.01 * rank))
+            cluster_labels = np.array([0] * len(anomaly_indices))
+            root_cause = {
+                "root_cause_cluster": 0,
+                "anomaly_count": len(anomaly_indices),
+                "cluster_size": len(anomaly_indices),
+                "sample_messages": crash_messages[:5],
+                "log_levels": {"ERROR": len(anomaly_indices)},
+                "root_cause_message": crash_messages[0] if crash_messages else "",
+                "suggestion": direct_suggestion or solution_engine.analyze_cluster(crash_messages),
+            }
+        else:
+            cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=3)
+            root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
+    else:
+        cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=3)
+        root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
+
+    if direct_suggestion:
+        root_cause["suggestion"] = direct_suggestion
+        if not root_cause.get("root_cause_message") and crash_messages:
+            root_cause["root_cause_message"] = crash_messages[0]
 
     if es is not None:
         push_anomalies_to_es(es, df, anomaly_indices, cluster_labels, root_cause)

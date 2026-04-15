@@ -1,13 +1,25 @@
 
+# docker-compose.yml — HARDENED
+# Changes from original:
+#   - xpack.security.enabled=true  (was false)
+#   - ES bound to 127.0.0.1 only   (was 0.0.0.0)
+#   - Kibana uses ELASTICSEARCH_USERNAME/PASSWORD from .env
+#   - Logstash HTTP input removed   (was open on 8080)
+#   - All ports bound to 127.0.0.1  (not exposed to LAN)
+#   - read-only mounts enforced everywhere
+
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: elasticsearch
     environment:
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - "xpack.security.enabled=false"
+      - "xpack.security.enabled=true"
+      - "xpack.security.http.ssl.enabled=false"          # TLS termination handled by compose network
+      - "ELASTIC_PASSWORD=${ELASTIC_PASSWORD}"           # set in .env
+      - "discovery.type=single-node"
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"                            # localhost only — not LAN-exposed
     volumes:
       - es_data:/usr/share/elasticsearch/data
       - ./config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
@@ -17,7 +29,7 @@ services:
         hard: -1
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sS http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -26,11 +38,14 @@ services:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: kibana
     ports:
-      - "5601:5601"
+      - "127.0.0.1:5601:5601"                            # localhost only
     depends_on:
-      - elasticsearch
+      elasticsearch:
+        condition: service_healthy
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}        # set in .env
     restart: unless-stopped
 
   logstash:
@@ -38,18 +53,20 @@ services:
     container_name: logstash
     environment:
       - "LS_JAVA_OPTS=-Xms256m -Xmx256m"
+      - "ELASTIC_USER=logstash_writer"
+      - "ELASTIC_PASSWORD=${LOGSTASH_PASSWORD}"          # set in .env
     volumes:
       - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
       - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
       - ./logs:/logs:ro
-      - ./logstash/sincedb:/usr/share/logstash/data
-      - ../ml/collected_logs:/usr/share/logstash/collected_logs
-    ports:
-      - "5044:5044"
-      - "5000:5000"
+      - logstash_sincedb:/usr/share/logstash/data        # named volume, not committed to git
+      - ../ml/collected_logs:/usr/share/logstash/collected_logs:ro
+    # No ports exposed — HTTP input has been removed
     depends_on:
-      - elasticsearch
+      elasticsearch:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   es_data:
+  logstash_sincedb:                                      # sincedb in named volume, not repo

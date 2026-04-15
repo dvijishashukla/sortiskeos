@@ -8,6 +8,7 @@ import { Toast } from "./App.jsx";
 import ReportExport from "./components/ReportExport.jsx";
 import PageHeader from "./components/PageHeader.jsx";
 import { formatTimeShort as formatDisplayTime, formatTimeLabel as formatChartTimeLabel } from "./utils/timeFormat.js";
+import { toDisplayText, toDisplayNumber, summarizeRootCause } from "./utils/displayValue.js";
 
 function useCountUp(target, duration = 1000) {
   const [count, setCount] = useState(0);
@@ -56,7 +57,8 @@ function formatDisplayDate(dateString) {
 }
 
 function formatTimelineData(items) {
-  if (!Array.isArray(items) || items.length === 0) return TIMELINE_DATA;
+  if (!Array.isArray(items)) return TIMELINE_DATA;
+  if (items.length === 0) return [];
   return items.map((item, index) => {
     const rawHour = typeof item?.hour === "string" ? item.hour : "";
     const label = rawHour ? formatChartTimeLabel(rawHour) : `${String(index).padStart(2, "0")}:00`;
@@ -74,82 +76,30 @@ function getTimelineDomain(items) {
 }
 
 function formatCrashRows(items) {
-  if (!Array.isArray(items) || items.length === 0) return CRASH_HISTORY;
+  if (!Array.isArray(items)) return CRASH_HISTORY;
   return items.map((item, index) => ({
-    id: index + 1, date: item?.date || "", time: item?.time || "",
-    rootCause: item?.rootCause || "Unknown root cause", anomalies: Number(item?.anomalies) || 0, score: Number(item?.score) || 0,
+    id: index + 1,
+    date: toDisplayText(item?.date, ""),
+    time: toDisplayText(item?.time, ""),
+    rootCause: summarizeRootCause(toDisplayText(item?.rootCause, "Unknown root cause")),
+    anomalies: toDisplayNumber(item?.anomalies, 0),
+    score: toDisplayNumber(item?.score, 0),
   }));
 }
 
 function formatAnomalyRows(items) {
-  if (!Array.isArray(items) || items.length === 0) return MOCK_ANOMALIES;
+  if (!Array.isArray(items)) return MOCK_ANOMALIES;
   return items.map((item, index) => ({
-    id: index + 1, time: formatDisplayTime(item?.time), level: item?.level || "INFO",
-    message: item?.message || "No message available", score: Number(item?.score) || 0,
-    isRootCause: Boolean(item?.isRootCause), cluster: item?.cluster ?? "", suggestion: item?.suggestion || {}, rootCause: item?.rootCause || "",
+    id: index + 1,
+    time: formatDisplayTime(toDisplayText(item?.time, "")),
+    level: toDisplayText(item?.level, "INFO"),
+    message: summarizeRootCause(toDisplayText(item?.message, "No message available")),
+    score: toDisplayNumber(item?.score, 0),
+    isRootCause: Boolean(item?.isRootCause),
+    cluster: toDisplayText(item?.cluster, ""),
+    suggestion: item?.suggestion || {},
+    rootCause: summarizeRootCause(toDisplayText(item?.rootCause, "")),
   }));
-}
-
-function summarizeRootCause(message) {
-  if (!message) return "Unknown Crash";
-
-  const normalized = String(message).replace(/\s+/g, " ").trim();
-  const lower = normalized.toLowerCase();
-  const eventName = normalized.match(/Event Name:\s*([^:]+?)(?=\s+[A-Z][A-Za-z ]+:\s|$)/i)?.[1]?.trim();
-  const removedUrl = normalized.match(/Removed URL\s*\((https?:\/\/[^)]+)\)/i)?.[1];
-
-  const compactLabel = (value) => String(value)
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/[_\-\/]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .slice(0, 3)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-    .join(" ");
-
-  if (eventName) {
-    const simplifiedEventName = eventName.toLowerCase();
-    if (simplifiedEventName.includes("startuprepaironline")) return "Startup Repair";
-    if (simplifiedEventName.includes("kernel-power")) return "Kernel Power";
-    if (simplifiedEventName.includes("bluescreen")) return "Blue Screen";
-    if (simplifiedEventName.includes("appcrash")) return "App Crash";
-    if (simplifiedEventName.includes("stoppedworking")) return "Service Failure";
-    return compactLabel(eventName);
-  }
-
-  if (removedUrl) {
-    try {
-      const parsedUrl = new URL(removedUrl);
-      const hostLabel = parsedUrl.hostname.replace(/^www\./i, "").split(".")[0];
-      const pathParts = parsedUrl.pathname.split("/").filter(Boolean);
-      const pathLabel = pathParts.slice(-2).join(" ");
-      const label = compactLabel(pathLabel || hostLabel || "URL Event");
-      if (label === "Upnp Eventing") return "UPnP Eventing";
-      return label;
-    } catch {
-      return "URL Event";
-    }
-  }
-
-  if (lower.includes("kernel-power") || lower.includes("event 41")) return "Kernel Power";
-  if (lower.includes("startup repair")) return "Startup Repair";
-  if (lower.includes("blue screen") || lower.includes("bugcheck")) return "Blue Screen";
-  if (lower.includes("appcrash")) return "App Crash";
-  if (lower.includes("driver")) return "Driver Failure";
-  if (lower.includes("disk")) return "Disk Failure";
-  if (lower.includes("memory")) return "Memory Error";
-  if (lower.includes("network")) return "Network Fault";
-  if (lower.includes("upnp")) return "UPnP Eventing";
-  if (lower.includes("dns")) return "DNS Error";
-
-  const faultBucket = normalized.match(/fault bucket\s*,?\s*type\s*\d+\s*event name:\s*([A-Za-z0-9_]+)/i)?.[1];
-  if (faultBucket) return compactLabel(faultBucket);
-
-  const leadingPhrase = normalized.match(/^[A-Za-z0-9._-]+(?:\s+[A-Za-z0-9._-]+){0,2}/)?.[0];
-  if (leadingPhrase) return compactLabel(leadingPhrase);
-
-  return "Unknown Crash";
 }
 
 function buildStats(stats) {
@@ -158,7 +108,7 @@ function buildStats(stats) {
     { label: "Crash Events", value: String(stats?.totalCrashes ?? 0), sub: "actual system failures" },
     { label: "Issues in Crash Window", value: String(stats?.totalIssues ?? 0), sub: "logged error events" },
     { label: "Last Crash", value: formatDisplayDate(stats?.lastCrash?.date), sub: formatDisplayTime(stats?.lastCrash?.time) },
-    { label: "DBSCAN Focus", value: stats?.rootCause ? String(stats.rootCause).slice(0, 16) : "None", sub: stats?.rootCause ? "latest event" : "no recent data" },
+    { label: "DBSCAN Focus", value: summarizeRootCause(stats?.rootCause), sub: stats?.rootCause ? "latest event" : "no recent data" },
     { label: "Anomalies in Crash Window", value: String(stats?.anomalyCount ?? 0), sub: "scored extreme (< -0.05)" },
   ];
 }
@@ -204,20 +154,6 @@ function StatCard({ label, value, sub, index }) {
   const targetNumber = isNumberFormat ? parseInt(value, 10) : 0;
   const animatedCount = useCountUp(targetNumber);
 
-  // Simple mock trend
-  const baseline = Math.max(1, Math.floor(targetNumber * 0.5));
-  let trendStr = "";
-  let isRising = false;
-  if (isNumberFormat && targetNumber > 0) {
-    if (targetNumber >= baseline) {
-      trendStr = `+${(((targetNumber - baseline) / baseline) * 100).toFixed(1)}%`;
-      isRising = true;
-    } else {
-      trendStr = `-${(((baseline - targetNumber) / baseline) * 100).toFixed(1)}%`;
-      isRising = false;
-    }
-  }
-
   return (
     <div className="stat-card" style={{
       padding: "16px 20px", display: "flex", flexDirection: "column", gap: 4,
@@ -243,11 +179,6 @@ function StatCard({ label, value, sub, index }) {
         }}>
           {isNumberFormat ? animatedCount : value}
         </span>
-        {isNumberFormat && targetNumber > 0 && (
-          <span style={{ fontSize: 11, fontWeight: 600, color: isRising ? "#ef4444" : "#22c55e" }}>
-            {trendStr} Prev Week
-          </span>
-        )}
       </div>
       <span style={{ fontSize: 12, color: "#64748b", letterSpacing: "0.2px" }}>{sub}</span>
     </div>
@@ -315,6 +246,7 @@ export default function Dashboard({ onNavigate = () => {} }) {
   // Dashboard initialization hook (removed duplicate)
 
   const latestRootCause = anomalies.find((item) => item.isRootCause) || anomalies[0] || null;
+  const hasScoredAnomalies = Array.isArray(anomalies) && anomalies.length > 0;
   const crashMarkerLabel = formatChartTimeLabel(crashHistory[0]?.time);
   const timelineDomain = getTimelineDomain(timelineData);
   const filtered = anomalies.filter((a) => (levelFilter === "ALL" || a.level === levelFilter) && a.message.toLowerCase().includes(search.toLowerCase()));
@@ -551,12 +483,18 @@ export default function Dashboard({ onNavigate = () => {} }) {
               
               {(() => {
                 const s = rawStats?.suggestion?.category ? rawStats.suggestion : (latestRootCause?.suggestion || {});
-                const isAnalyzing = !s.category || s.category === "Unknown/Generic Error";
-                
+                const isAnalyzing = !s.category || s.category === "Unknown/Generic Error" || !hasScoredAnomalies;
+                const likelyCauseSource = toDisplayText(s.likely_cause, rawStats?.rootCause || latestRootCause?.message || "");
+                const summarizedCause = hasScoredAnomalies
+                  ? summarizeRootCause(likelyCauseSource)
+                  : "Latest crash window has no negative anomaly scores yet. Run Re-analyze after fresh logs are ingested.";
+
                 return (
                   <>
                     <div style={{ fontSize: 24, fontWeight: 800, color: "#e2e8f0", marginBottom: 4 }}>
-                      {isAnalyzing ? "Analyzing..." : s.category}
+                      {hasScoredAnomalies
+                        ? (isAnalyzing ? "Analyzing..." : toDisplayText(s.category, "Analyzing..."))
+                        : "No Scored Anomalies"}
                     </div>
                     
                     {isAnalyzing && (
@@ -565,29 +503,32 @@ export default function Dashboard({ onNavigate = () => {} }) {
                       </div>
                     )}
 
-                    <div style={{ fontSize: 15, color: "#94a3b8", marginBottom: 12 }}>
-                      {s.likely_cause || "System is processing detected anomalies to determine specific failure vectors."}
+                    <div style={{ fontSize: 15, color: "#94a3b8", marginBottom: 12, whiteSpace: "pre-wrap", overflowWrap: "break-word" }} title={likelyCauseSource}>
+                      {summarizedCause}
                     </div>
-
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
                       <span style={{
                         background: "rgba(124, 58, 237, 0.2)", color: "#a78bfa",
                         borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 700
                       }}>
-                        {s.confidence || "Medium"} CONFIDENCE
+                        {hasScoredAnomalies ? `${toDisplayText(s.confidence, "Medium")} CONFIDENCE` : "WAITING FOR DATA"}
                       </span>
-                      <span style={{ color: "#475569", fontSize: 12 }}>•</span>
-                      <span style={{ color: "#94a3b8", fontSize: 12 }}>Cluster C{latestRootCause?.cluster ?? "-"}</span>
-                      <span style={{ color: "#475569", fontSize: 12 }}>•</span>
-                      <span style={{ color: "#94a3b8", fontSize: 12 }}>Severity {latestRootCause?.score?.toFixed(3) || "0.000"}</span>
+                      {hasScoredAnomalies && (
+                        <>
+                          <span style={{ color: "#475569", fontSize: 12 }}>�</span>
+                          <span style={{ color: "#94a3b8", fontSize: 12 }}>Cluster C{latestRootCause?.cluster ?? "-"}</span>
+                          <span style={{ color: "#475569", fontSize: 12 }}>�</span>
+                          <span style={{ color: "#94a3b8", fontSize: 12 }}>Severity {latestRootCause?.score?.toFixed(3) || "0.000"}</span>
+                        </>
+                      )}
                     </div>
 
-                    {s.investigate?.[0] && (
+                    {hasScoredAnomalies && s.investigate?.[0] && (
                       <div style={{ 
                         fontSize: 13, color: "#7c3aed", background: "rgba(124, 58, 237, 0.05)", 
                         padding: "8px 12px", borderRadius: 6, border: "1px solid rgba(124, 58, 237, 0.1)"
                       }}>
-                        <span style={{ fontWeight: 700 }}>HINT:</span> {s.investigate[0]}
+                        <span style={{ fontWeight: 700 }}>HINT:</span> {toDisplayText(s.investigate[0], "No hint available")}
                       </div>
                     )}
                   </>
@@ -809,3 +750,5 @@ export default function Dashboard({ onNavigate = () => {} }) {
     </>
   );
 }
+
+

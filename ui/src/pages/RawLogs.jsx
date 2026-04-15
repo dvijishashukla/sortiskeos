@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 import { fetchLogs } from "../api";
 import PageHeader from "../components/PageHeader.jsx";
+import { toDisplayText } from "../utils/displayValue.js";
 
 import { formatTimeFull as formatTime } from "../utils/timeFormat.js";
 
 function normalizeLogs(items) {
   if (!Array.isArray(items)) return [];
   return items.map((item, index) => ({
-    id: `${item?.time || "log"}-${index}`,
-    time: item?.time || "",
-    level: item?.level || "INFO",
-    source: item?.source || "unknown",
-    message: item?.message || "No message available",
+    id: `${toDisplayText(item?.time, "log")}-${index}`,
+    time: toDisplayText(item?.time, ""),
+    level: toDisplayText(item?.level, "INFO"),
+    source: toDisplayText(item?.source, "unknown"),
+    message: toDisplayText(item?.message, "No message available"),
   }));
 }
 
