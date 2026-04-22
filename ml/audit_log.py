@@ -1,6 +1,6 @@
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 AUDIT_FILE = Path(__file__).parent / "collected_logs" / "audit.log"
@@ -22,7 +22,7 @@ def write_audit(action: str, detail: dict = None):
 
     prev_hash = entries[-1]["hash"] if entries else "0"
     entry = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "action": action,
         "detail": detail
     }

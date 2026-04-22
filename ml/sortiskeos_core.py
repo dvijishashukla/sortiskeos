@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import collections
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from elasticsearch import Elasticsearch, helpers
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import IsolationForest
@@ -51,7 +52,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "collected_logs")
 STAGING_FILE = os.path.join(OUTPUT_DIR, "system_logs.json")
 BOOKMARK_FILE = os.path.join(BASE_DIR, "bookmark_collector.json")
+ROOT_ENV_PATH = os.path.join(os.path.dirname(BASE_DIR), ".env")
+ML_ENV_PATH = os.path.join(BASE_DIR, ".env")
+load_dotenv(ROOT_ENV_PATH)
+load_dotenv(ML_ENV_PATH, override=True)
+
 ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
+ES_USER = os.getenv("ES_USER", "elastic")
+ES_PASSWORD = os.getenv("ES_PASSWORD", "") or os.getenv("ELASTIC_PASSWORD", "")
 
 CHANNELS = ["System", "Application", "Security"]
 BATCH_SIZE = 5000
@@ -105,7 +113,7 @@ def collector_loop():
     flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
     computer = os.environ.get("COMPUTERNAME", "unknown")
 
-    if True:
+    while True:
         records = []
         for channel in CHANNELS:
             last_time = datetime.fromisoformat(bookmarks[channel]).replace(tzinfo=None)
@@ -168,8 +176,8 @@ def collector_loop():
             with open(BOOKMARK_FILE, "w") as f:
                 json.dump(bookmarks, f)
             log.info(f"Wrote {len(records)} collected events (including CPU/RAM) to stash.")
-            
-        pass
+
+        time.sleep(POLL_WIN_INTERVAL)
 
 
 # ---------------------------------------------------------
@@ -189,7 +197,7 @@ def ml_pipeline_loop(es: Elasticsearch):
     log.info(f"ML Engine started. Smart-trigger threshold: {MIN_NEW_LOGS_FOR_ML} logs...")
     last_ml_timestamp = "1970-01-01T00:00:00Z"
 
-    if True:
+    while True:
         try:
             res = es.search(
                 index="system-logs-*",
@@ -201,8 +209,8 @@ def ml_pipeline_loop(es: Elasticsearch):
             )
             hits = res.get("hits", {}).get("hits", [])
             if not hits:
-                pass
-                pass
+                time.sleep(POLL_ES_INTERVAL)
+                continue
                 
             records = []
             new_log_count = 0
@@ -230,8 +238,8 @@ def ml_pipeline_loop(es: Elasticsearch):
             # SMART-TRIGGER RESOURCE OPTIMIZATION
             if new_log_count < MIN_NEW_LOGS_FOR_ML and last_ml_timestamp != "1970-01-01T00:00:00Z":
                 log.info(f"Quiet network. Only {new_log_count} < {MIN_NEW_LOGS_FOR_ML} new logs. ML thread sleeping (CPU 0%)...")
-                pass
-                pass
+                time.sleep(POLL_ES_INTERVAL)
+                continue
                 
             # Update watermark and proceed
             last_ml_timestamp = latest_time_in_batch
@@ -290,15 +298,22 @@ def ml_pipeline_loop(es: Elasticsearch):
 
         except Exception as e:
             log.error(f"ML Pipeline error: {e}")
-            
-        pass
+
+        time.sleep(POLL_ES_INTERVAL)
 
 # ---------------------------------------------------------
 # MAIN ORCHESTRATOR
 # ---------------------------------------------------------
 def main():
     log.info("Starting Sortiskeos Advanced Agent...")
-    es = Elasticsearch(ES_HOST, max_retries=2, request_timeout=5)
+    es_kwargs = {
+        "hosts": ES_HOST,
+        "max_retries": 2,
+        "request_timeout": 5,
+    }
+    if ES_PASSWORD:
+        es_kwargs["basic_auth"] = (ES_USER, ES_PASSWORD)
+    es = Elasticsearch(**es_kwargs)
     
     t1 = threading.Thread(target=collector_loop, name="Collector", daemon=True)
     t2 = threading.Thread(target=ml_pipeline_loop, args=(es,), name="MLPipeline", daemon=True)
@@ -307,7 +322,7 @@ def main():
     t2.start()
     
     try:
-        if True:
+        while True:
             time.sleep(1)
     except KeyboardInterrupt:
         log.info("Shutting down Sortiskeos Agent...")

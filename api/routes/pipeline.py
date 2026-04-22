@@ -17,8 +17,7 @@ ML_PIPELINE = ML_DIR / 'ml_pipeline.py'
 async def trigger_pipeline() -> Dict[str, Any]:
     """
     Trigger the ML pipeline: log collection + anomaly detection.
-    Runs both scripts as non-blocking subprocesses using subprocess.Popen.
-    Returns immediately without waiting for completion.
+    Runs log collection first and only starts ML after fresh logs are written.
     """
     try:
         # Validate that both script files exist
@@ -35,23 +34,35 @@ async def trigger_pipeline() -> Dict[str, Any]:
                 'code': 404,
             }
 
-        # Start log collector in background
-        log_collector_process = subprocess.Popen(
+        log_collector_result = subprocess.run(
             [sys.executable, str(LOG_COLLECTOR)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
+        if log_collector_result.returncode != 0:
+            return {
+                'status': 'error',
+                'message': 'Log collection failed',
+                'code': log_collector_result.returncode,
+                'stderr': log_collector_result.stderr[-1000:],
+            }
 
-        # Start ML pipeline in background
-        ml_pipeline_process = subprocess.Popen(
+        ml_pipeline_result = subprocess.run(
             [sys.executable, str(ML_PIPELINE)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
+        if ml_pipeline_result.returncode != 0:
+            return {
+                'status': 'error',
+                'message': 'ML pipeline failed',
+                'code': ml_pipeline_result.returncode,
+                'stderr': ml_pipeline_result.stderr[-1000:],
+            }
 
         return {
-            'status': 'started',
-            'message': 'Pipeline triggered successfully',
+            'status': 'completed',
+            'message': 'Pipeline completed successfully',
         }
 
     except Exception as e:

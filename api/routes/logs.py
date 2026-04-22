@@ -49,6 +49,8 @@ def format_log(hit: Dict[str, Any], *, source_is_hit: bool = True) -> Dict[str, 
         'isRootCause': source.get('isRootCause', source.get('is_root_cause', False)),
         'cluster': normalize_cluster_value(source),
         'rootCause': source.get('rootCause', ''),
+        'rootCauseScore': source.get('root_cause_score', 0),
+        'rootCauseRank': source.get('root_cause_rank', 0),
         'suggestion': source.get('suggestion', {}),
     }
 

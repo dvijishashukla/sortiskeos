@@ -15,8 +15,8 @@ function normalizeCrashes(items) {
     score: toDisplayNumber(item?.score, 0),
     events: Array.isArray(item?.events)
       ? item.events.map((evt) => ({
-          level: toDisplayText(evt?.level, "INFO"),
-          message: toDisplayText(evt?.message, "No message available"),
+          level: toDisplayText(evt?.level || evt?.source, "INFO"),
+          message: toDisplayText(evt?.message || evt?.msg || evt?.rootCause, "No message available"),
         }))
       : [],
   }));

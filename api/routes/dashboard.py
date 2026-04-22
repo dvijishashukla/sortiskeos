@@ -160,15 +160,17 @@ def pick_matching_anomaly(
     crash_message = str(crash_source.get('message') or '')
     best_match: Dict[str, Any] | None = None
     best_distance: float | None = None
+    best_rank: float | None = None
+    best_score: float | None = None
 
     for anomaly in anomalies:
         anomaly_time = parse_timestamp(anomaly.get('@timestamp') or anomaly.get('time'))
         if anomaly_time is None:
             continue
 
-        distance = abs((anomaly_time - crash_time).total_seconds())
-        if distance > 120:
+        if not is_associated_anomaly_time(crash_time, anomaly_time):
             continue
+        distance = abs((anomaly_time - crash_time).total_seconds())
 
         anomaly_message = str(anomaly.get('message') or '')
         message_matches = (
@@ -182,9 +184,40 @@ def pick_matching_anomaly(
         if not message_matches and distance > 5:
             continue
 
-        if best_match is None or best_distance is None or distance < best_distance:
+        try:
+            rank = float(anomaly.get('root_cause_rank', 0) or 0)
+        except (TypeError, ValueError):
+            rank = 0.0
+        try:
+            candidate_score = float(anomaly.get('root_cause_score', anomaly.get('anomaly_score', anomaly.get('score', 0))) or 0)
+        except (TypeError, ValueError):
+            candidate_score = 0.0
+
+        if best_match is None:
             best_match = anomaly
             best_distance = distance
+            best_rank = rank if rank > 0 else 999999.0
+            best_score = candidate_score
+            continue
+
+        effective_rank = rank if rank > 0 else 999999.0
+        current_best_rank = best_rank if best_rank is not None else 999999.0
+
+        if best_distance is None or distance < best_distance:
+            best_match = anomaly
+            best_distance = distance
+            best_rank = effective_rank
+            best_score = candidate_score
+            continue
+
+        if distance == best_distance and (
+            effective_rank < current_best_rank
+            or (effective_rank == current_best_rank and candidate_score > (best_score or 0))
+        ):
+            best_match = anomaly
+            best_distance = distance
+            best_rank = effective_rank
+            best_score = candidate_score
 
     return best_match
 
@@ -223,6 +256,20 @@ def infer_label(messages: List[str]) -> str:
     return 'Kernel / Network'
 
 
+def rootcause_sort_key(item: Dict[str, Any]) -> tuple[float, float]:
+    try:
+        rank = float(item.get('root_cause_rank', 0) or 0)
+    except (TypeError, ValueError):
+        rank = 0.0
+    try:
+        score = float(item.get('root_cause_score', item.get('anomaly_score', item.get('score', 0))) or 0)
+    except (TypeError, ValueError):
+        score = 0.0
+
+    effective_rank = rank if rank > 0 else 999999.0
+    return (effective_rank, -score)
+
+
 def to_display_cluster(raw_cluster: Any) -> int:
     try:
         cluster_id = int(raw_cluster)
@@ -231,6 +278,43 @@ def to_display_cluster(raw_cluster: Any) -> int:
     if cluster_id < 0:
         return 0
     return cluster_id + 1
+
+
+def build_associated_events(anomalies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ranked = sorted(
+        anomalies,
+        key=lambda item: (
+            0 if bool(item.get('is_root_cause', item.get('isRootCause'))) else 1,
+            rootcause_sort_key(item),
+            str(item.get('@timestamp') or item.get('time') or ''),
+        ),
+    )
+    events: List[Dict[str, Any]] = []
+    for anomaly in ranked:
+        events.append(
+            {
+                'time': anomaly.get('@timestamp') or anomaly.get('time') or '',
+                'level': (
+                    'ROOT CAUSE'
+                    if bool(anomaly.get('is_root_cause', anomaly.get('isRootCause')))
+                    else str(anomaly.get('level') or 'ANOMALY').upper()
+                ),
+                'message': anomaly.get('message') or anomaly.get('log') or anomaly.get('rootCause') or '',
+                'score': float(anomaly.get('anomaly_score', anomaly.get('score', 0)) or 0),
+            }
+        )
+    return events
+
+
+def is_associated_anomaly_time(
+    crash_time: datetime,
+    anomaly_time: datetime,
+    *,
+    lookback_seconds: int = 120,
+    lookahead_seconds: int = 15,
+) -> bool:
+    delta_seconds = (anomaly_time - crash_time).total_seconds()
+    return -lookback_seconds <= delta_seconds <= lookahead_seconds
 
 
 @router.get('/stats')
@@ -643,13 +727,31 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
         crashes: List[Dict[str, Any]] = []
         for item in crash_logs:
             when = split_timestamp(item.get('@timestamp') or item.get('time'))
+            crash_dt = parse_timestamp(item.get('@timestamp') or item.get('time'))
+            window_anomalies = []
+            if crash_dt:
+                window_anomalies = [
+                    anomaly for anomaly in anomalies
+                    if parse_timestamp(anomaly.get('@timestamp') or anomaly.get('time')) and
+                    is_associated_anomaly_time(
+                        crash_dt,
+                        parse_timestamp(anomaly.get('@timestamp') or anomaly.get('time')),
+                    )
+                ]
             crashes.append(
                 {
                     'date': when['date'],
                     'time': when['time'],
                     'rootCause': root_message or item.get('message') or '',
-                    'anomalies': anomaly_count,
-                    'score': score,
+                    'anomalies': len(window_anomalies) if crash_dt else anomaly_count,
+                    'score': min(
+                        (
+                            float(anomaly.get('anomaly_score', anomaly.get('score', 0)) or 0)
+                            for anomaly in window_anomalies
+                        ),
+                        default=score,
+                    ),
+                    'events': build_associated_events(window_anomalies[:10]),
                     'type': determine_event_type(item),
                 }
             )
@@ -727,7 +829,10 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
                 window_anomalies = [
                     a for a in anomaly_hits
                     if parse_timestamp(a.get('@timestamp') or a.get('time')) and
-                    abs((parse_timestamp(a.get('@timestamp') or a.get('time')) - crash_dt).total_seconds()) <= 120
+                    is_associated_anomaly_time(
+                        crash_dt,
+                        parse_timestamp(a.get('@timestamp') or a.get('time')),
+                    )
                 ]
                 anomaly_count = len(window_anomalies)
                 # Use the most anomalous score (most negative)
@@ -752,6 +857,7 @@ async def get_dashboard_crashes(request: Request) -> List[Dict[str, Any]]:
                     ),
                     'anomalies': anomaly_count,
                     'score': min_score,
+                    'events': build_associated_events(window_anomalies[:10]),
                     'cluster': (
                         to_display_cluster((matching_anomaly or {}).get('cluster_id'))
                         if matching_anomaly is not None and (matching_anomaly or {}).get('cluster_id') is not None
@@ -784,6 +890,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
     label = summary.get('label', 'No data')
     anomaly_count = int(summary.get('anomaly_count', 0) or 0)
     top_score = float(summary.get('top_score', 0) or 0)
+    top_root_cause_score = float(summary.get('top_root_cause_score', 0) or 0)
     description = summary.get('description', '')
     fix = summary.get('fix', '')
     suggestion = summary.get('suggestion', {})
@@ -801,6 +908,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
         ]
         if not cluster_events:
             cluster_events = local_anomalies[:10]
+        cluster_events = sorted(cluster_events, key=rootcause_sort_key)
 
         events = []
         for index, event in enumerate(cluster_events[:10]):
@@ -815,7 +923,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
         return {
             'clusterId': to_display_cluster(cluster_id),
             'label': label if label != 'No data' else infer_label([e['message'].lower() for e in events]),
-            'confidence': min(99, int(30 + len(cluster_events) * 5 + abs(top_score) * 100)),
+            'confidence': min(99, int(30 + len(cluster_events) * 5 + max(abs(top_score) * 100, top_root_cause_score * 2))),
             'anomalyCount': anomaly_count or len(cluster_events),
             'topScore': top_score or (min(e['score'] for e in events) if events else 0),
             'events': events,
@@ -904,7 +1012,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
 
         cluster_docs_sorted = sorted(
             cluster_docs,
-            key=lambda d: float(d.get('anomaly_score', d.get('score', 0)) or 0),
+            key=rootcause_sort_key,
         )
 
         events = []
@@ -919,6 +1027,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
 
         top = cluster_docs_sorted[0] if cluster_docs_sorted else {}
         effective_top_score = float(top.get('anomaly_score', top.get('score', top_score)) or 0)
+        effective_root_cause_score = float(top.get('root_cause_score', top_root_cause_score) or 0)
         effective_label = (
             top.get('label')
             or top.get('rootCause')
@@ -931,7 +1040,7 @@ async def get_dashboard_rootcause(request: Request) -> Dict[str, Any]:
         return {
             'clusterId': to_display_cluster(chosen_cluster_raw),
             'label': effective_label,
-            'confidence': min(99, int(35 + len(cluster_docs_sorted) * 4 + abs(effective_top_score) * 100)),
+            'confidence': min(99, int(35 + len(cluster_docs_sorted) * 4 + max(abs(effective_top_score) * 100, effective_root_cause_score * 2))),
             'anomalyCount': len(cluster_docs_sorted),
             'topScore': effective_top_score,
             'events': events,
