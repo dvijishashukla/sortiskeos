@@ -19,7 +19,8 @@ import time
 import logging
 import threading
 import re
-from datetime import datetime, timedelta
+import hashlib
+from datetime import datetime, timedelta, timezone
 import collections
 import numpy as np
 import pandas as pd
@@ -76,8 +77,25 @@ NUMBER_PATTERN = re.compile(r"\b\d+\b")
 PATH_PATTERN = re.compile(r"/[\w/\-\.]+")
 GUID_PATTERN = re.compile(r"\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?", re.IGNORECASE)
 
-CRITICAL_IDS = {41, 6008, 1001, 7034, 7031, 55, 29}
+# Load Noise Config
+def load_noise_config():
+    config_path = os.path.join(BASE_DIR, "noise_config.json")
+    try:
+        with open(config_path, "r") as f:
+            cfg = json.load(f)
+        return set(cfg.get("suppressed_event_ids", [])), set(cfg.get("critical_event_ids", []))
+    except Exception:
+        return set(), {41, 6008, 1001, 1000, 1002, 7034, 7031, 55, 29}
+
+SUPPRESSED_IDS, CRITICAL_IDS = load_noise_config()
 WARN_IDS = {6006, 1014, 10010, 10016}
+LEVEL_PRIORITY = {
+    "CRITICAL": 4,
+    "ERROR": 3,
+    "WARN": 2,
+    "WARNING": 2,
+    "INFO": 1,
+}
 
 # ---------------------------------------------------------
 # THREAD 1: LOG COLLECTION TO JSON
@@ -108,7 +126,17 @@ def collector_loop():
         
     for ch in CHANNELS:
         if ch not in bookmarks:
-            bookmarks[ch] = (datetime.now() - timedelta(hours=3)).isoformat()
+            # Bug Fix: Use UTC for initial lookback to match win32evtlog.TimeGenerated
+            bookmarks[ch] = (datetime.utcnow() - timedelta(hours=6)).isoformat()
+        else:
+            # Sanity check: If bookmark is in the future (common after IST -> UTC migration), reset it
+            try:
+                bm_time = datetime.fromisoformat(bookmarks[ch]).replace(tzinfo=None)
+                if bm_time > datetime.utcnow() + timedelta(minutes=5):
+                    log.warning(f"Future bookmark detected for {ch} ({bookmarks[ch]}). Resetting to 6hr lookback.")
+                    bookmarks[ch] = (datetime.utcnow() - timedelta(hours=6)).isoformat()
+            except Exception:
+                bookmarks[ch] = (datetime.utcnow() - timedelta(hours=6)).isoformat()
 
     flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
     computer = os.environ.get("COMPUTERNAME", "unknown")
@@ -122,21 +150,33 @@ def collector_loop():
             try:
                 handle = win32evtlog.OpenEventLog(None, channel)
                 stop = False
+                log.info(f"Sweeping channel {channel} (lookback start: {last_time})...")
                 while not stop:
                     events = win32evtlog.ReadEventLog(handle, flags, 0)
                     if not events: break
                     
                     for event in events:
-                        evt_time = event.TimeGenerated.replace(tzinfo=None)
-                        if evt_time <= last_time:
+                        # event.TimeGenerated is aware IST
+                        evt_utc = event.TimeGenerated.astimezone(timezone.utc)
+                        evt_time_naive = evt_utc.replace(tzinfo=None)
+                        
+                        if evt_time_naive <= last_time:
                             stop = True
                             break
-                        if evt_time > highest_time:
-                            highest_time = evt_time
+                        if evt_time_naive > highest_time:
+                            highest_time = evt_time_naive
                             
                         event_id = event.EventID & 0xFFFF
+                        if event_id in SUPPRESSED_IDS:
+                            continue
+                        
+                        # event.TimeGenerated is a datetime-like object from pywin32
+                        # Convert to proper UTC ISO format
+                        utc_ts = event.TimeGenerated.astimezone(timezone.utc)
+                        
                         records.append({
-                            "@timestamp": evt_time.isoformat() + "Z",
+                            "@timestamp": utc_ts.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                            "timestamp_ist": utc_ts.astimezone(None).isoformat(),
                             "level": map_win_level(event.EventType, event_id),
                             "source": f"windows/{channel}",
                             "event_id": event_id,
@@ -146,7 +186,7 @@ def collector_loop():
                 if highest_time > last_time:
                     bookmarks[channel] = highest_time.isoformat()
             except Exception as e:
-                pass
+                log.error(f"Collector failed on channel {channel}: {e}")
             finally:
                 if handle:
                     try: win32evtlog.CloseEventLog(handle)
@@ -158,7 +198,7 @@ def collector_loop():
             ram = psutil.virtual_memory().percent
             health_level = "WARN" if (cpu > 85 or ram > 90) else "INFO"
             records.append({
-                "@timestamp": datetime.now().isoformat() + "Z",
+                "@timestamp": datetime.utcnow().isoformat() + "Z",
                 "level": health_level,
                 "source": "sortiskeos/SystemHealth",
                 "event_id": 9999,
@@ -193,9 +233,52 @@ def normalize_msg(msg: str) -> str:
     msg = msg.lower()
     return re.sub(r"\s+", " ", msg).strip() or "empty"
 
+
+def level_priority(level: str) -> int:
+    return LEVEL_PRIORITY.get(str(level or "INFO").upper(), 1)
+
+
+def root_cause_min_priority(df: pd.DataFrame) -> int:
+    if df.empty:
+        return 1
+    priorities = df["level"].apply(level_priority)
+    if (priorities >= LEVEL_PRIORITY["ERROR"]).any():
+        return LEVEL_PRIORITY["ERROR"]
+    if (priorities >= LEVEL_PRIORITY["WARN"]).any():
+        return LEVEL_PRIORITY["WARN"]
+    return LEVEL_PRIORITY["INFO"]
+
+
+def deduplicate_anomalies(anomaly_df: pd.DataFrame) -> pd.DataFrame:
+    if anomaly_df.empty:
+        return anomaly_df.copy()
+
+    working = anomaly_df.copy()
+    working["level_priority"] = working["level"].apply(level_priority)
+    working["severity_score"] = working["score"].apply(lambda value: abs(float(value or 0)))
+    working["count"] = 1
+
+    rows = []
+    for _, group in working.groupby(["timestamp", "clean_message"], dropna=False, sort=False):
+        ordered = group.sort_values(
+            ["level_priority", "severity_score", "timestamp"],
+            ascending=[False, False, False],
+        )
+        representative = ordered.iloc[0].copy()
+        representative["count"] = int(len(group))
+        rows.append(representative)
+
+    return pd.DataFrame(rows).reset_index(drop=True)
+
 def ml_pipeline_loop(es: Elasticsearch):
     log.info(f"ML Engine started. Smart-trigger threshold: {MIN_NEW_LOGS_FOR_ML} logs...")
     last_ml_timestamp = "1970-01-01T00:00:00Z"
+    while True:
+        try:
+            if es.ping(): break
+        except Exception: pass
+        log.warning("ML Engine waiting for Elasticsearch...")
+        time.sleep(10)
 
     while True:
         try:
@@ -232,6 +315,7 @@ def ml_pipeline_loop(es: Elasticsearch):
                     "message": s.get("message", "empty"),
                     "source": s.get("source", "unknown"),
                     "host": s.get("host", "unknown"),
+                    "event_id": s.get("event_id") or s.get("EventID"),
                     "clean_message": normalize_msg(s.get("message", ""))
                 })
 
@@ -263,30 +347,72 @@ def ml_pipeline_loop(es: Elasticsearch):
                 df["cluster"] = -1
                 for idx, c_id in zip(anomaly_indices, cluster_labels):
                     df.at[idx, "cluster"] = c_id
-                    
-                # Determine Root Cause
+
+                anomaly_df = deduplicate_anomalies(df.iloc[anomaly_indices].copy())
+                min_priority = root_cause_min_priority(anomaly_df)
+                anomaly_df["eligible_root_cause"] = anomaly_df["level"].apply(level_priority) >= min_priority
+                anomaly_df = anomaly_df.sort_values(
+                    ["eligible_root_cause", "level_priority", "severity_score", "timestamp"],
+                    ascending=[False, False, False, False],
+                ).reset_index(drop=True)
+                anomaly_df["root_cause_rank"] = np.arange(1, len(anomaly_df) + 1)
+
+                # Determine Root Cause cluster from deduplicated anomalies.
                 root_cluster_id = -1
-                valid_clusters = cluster_labels[cluster_labels != -1]
-                if len(valid_clusters) > 0:
-                    counts = collections.Counter(valid_clusters)
-                    root_cluster_id = counts.most_common(1)[0][0]
-                    
+                valid_cluster_df = anomaly_df[anomaly_df["cluster"] >= 0].copy()
+                if not valid_cluster_df.empty:
+                    cluster_summaries = []
+                    for cluster_id, group in valid_cluster_df.groupby("cluster"):
+                        cluster_summaries.append({
+                            "cluster_id": int(cluster_id),
+                            "top_level_priority": int(group["level"].apply(level_priority).max() or 1),
+                            "top_severity": float(group["severity_score"].max() or 0),
+                            "cluster_size": int(len(group)),
+                        })
+                    eligible_clusters = [item for item in cluster_summaries if item["top_level_priority"] >= min_priority] or cluster_summaries
+                    eligible_clusters.sort(
+                        key=lambda item: (
+                            item["top_level_priority"],
+                            item["top_severity"],
+                            item["cluster_size"],
+                        ),
+                        reverse=True,
+                    )
+                    root_cluster_id = eligible_clusters[0]["cluster_id"]
+
                 # Push anomalies back to ES exactly how the UI expects
                 actions = []
-                for _, row in df.iloc[anomaly_indices].iterrows():
+                for _, row in anomaly_df.iterrows():
                     c_id = int(row["cluster"])
+                    is_root_cause = int(row.get("root_cause_rank", 0) or 0) == 1
+                    stable_id = hashlib.sha1(
+                        f"{row['timestamp']}|{row['clean_message']}".encode("utf-8")
+                    ).hexdigest()
                     actions.append({
                         "_index": "log-anomalies",
-                        "_id": f"ano_{row['es_id']}",
+                        "_id": stable_id,
                         "_source": {
                             "@timestamp": row["timestamp"],
+                            "time": row["timestamp"],
+                            "timestamp": row["timestamp"],
                             "level": row["level"],
                             "message": row["message"],
                             "source": row["source"],
                             "host": row["host"],
+                            "score": float(row["score"]),
                             "anomaly_score": float(row["score"]),
                             "cluster_id": c_id,
-                            "is_root_cause": bool(c_id == root_cluster_id),
+                            "cluster": c_id,
+                            "count": int(row.get("count", 1) or 1),
+                            "root_cause_rank": int(row.get("root_cause_rank", 0) or 0),
+                            "root_cause_score": float(row.get("severity_score", abs(float(row["score"])))),
+                            "isRootCause": is_root_cause,
+                            "is_root_cause": is_root_cause,
+                            "rootCause": row["message"] if (c_id == root_cluster_id or is_root_cause) else "",
+                            "method": "IsolationForest+DBSCAN",
+                            "scoring_method": "IsolationForest",
+                            "event_id": row.get("event_id"),
+                            "noise_suppressed": False,
                             "analysed_at": datetime.now().isoformat()
                         }
                     })

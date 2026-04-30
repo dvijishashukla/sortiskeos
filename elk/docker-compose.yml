@@ -53,8 +53,8 @@ services:
     container_name: logstash
     environment:
       - "LS_JAVA_OPTS=-Xms256m -Xmx256m"
-      - "ELASTIC_USER=logstash_writer"
-      - "ELASTIC_PASSWORD=${LOGSTASH_PASSWORD}"          # set in .env
+      - "ELASTIC_USER=elastic"
+      - "ELASTIC_PASSWORD=${ELASTIC_PASSWORD}"          # set in .env
     volumes:
       - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
       - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro

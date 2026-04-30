@@ -32,6 +32,7 @@ function formatAnomalies(items) {
     message: summarizeRootCause(toDisplayText(item?.message, "No message available")),
     score: toDisplayNumber(item?.score, 0),
     cluster: toDisplayNumber(item?.cluster, 0),
+    count: Math.max(1, toDisplayNumber(item?.count, 1)),
     method: toDisplayText(item?.method, "IsolationForest+DBSCAN"),
   }));
 }
@@ -268,7 +269,23 @@ export default function AnomaliesDetail({ onBack }) {
                   <td style={{ padding: "12px 16px", fontFamily: "monospace", fontSize: 11, color: "#64748b", whiteSpace: "nowrap" }}>{a.time}</td>
                   <td style={{ padding: "12px 16px" }}><LevelBadge level={a.level} /></td>
                   <td style={{ padding: "12px 16px", fontSize: 11, color: "#64748b", fontFamily: "monospace", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.source}</td>
-                  <td style={{ padding: "12px 16px", fontSize: 12, color: "#e2e8f0", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.message}</td>
+                  <td style={{ padding: "12px 16px", fontSize: 12, color: "#e2e8f0", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span>{a.message}</span>
+                    {a.count > 1 && (
+                      <span style={{
+                        marginLeft: 8,
+                        background: "rgba(124, 58, 237, 0.12)",
+                        color: "#a78bfa",
+                        border: "1px solid rgba(124, 58, 237, 0.25)",
+                        borderRadius: 999,
+                        padding: "1px 7px",
+                        fontSize: 10,
+                        fontFamily: "monospace",
+                      }}>
+                        x{a.count}
+                      </span>
+                    )}
+                  </td>
                   <td style={{ padding: "12px 16px" }}>
                     <span style={{
                       fontFamily: "monospace", fontSize: 11,

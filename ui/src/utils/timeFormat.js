@@ -7,10 +7,6 @@ export function parseAsLocal(value) {
     timeString = `1970-01-01T${timeString}`;
   }
 
-  // Strip 'Z' or any offset (+05:30) so Javascript treats it strictly as local wall-clock time
-  timeString = timeString.replace(/Z$/, '');
-  timeString = timeString.replace(/[+-]\d{2}:\d{2}$/, '');
-
   return new Date(timeString);
 }
 

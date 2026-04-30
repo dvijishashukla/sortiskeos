@@ -61,8 +61,12 @@ export default function CrashHistory() {
               }} />
               
               <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
-                <span style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>{c.date}</span>
-                <span style={{ fontSize: 13, color: "#64748b" }}>{c.time}</span>
+                <span style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>
+                  {new Date(c.timestamp || `${c.date}T${c.time}Z`).toLocaleDateString()}
+                </span>
+                <span style={{ fontSize: 13, color: "#64748b" }}>
+                  {new Date(c.timestamp || `${c.date}T${c.time}Z`).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                </span>
               </div>
               
               <div style={{

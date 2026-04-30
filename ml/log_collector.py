@@ -21,7 +21,7 @@ from pathlib import Path
 OUTPUT_DIR = Path(__file__).parent / "collected_logs"
 STAGING_FILE = OUTPUT_DIR / "system_logs.json"
 MANIFEST_FILE = OUTPUT_DIR / "system_logs.json.hmac"
-WINDOW_MINUTES = 30
+WINDOW_MINUTES = 360
 MAX_EVENTS = 5000
 
 LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
@@ -158,7 +158,7 @@ def collect_windows_logs(window_minutes: int = WINDOW_MINUTES) -> list[dict]:
         log.warning("No shutdown event found, using current time as window end.")
 
     window_start = shutdown_time - timedelta(minutes=window_minutes)
-    window_end = shutdown_time + timedelta(minutes=15)
+    window_end = shutdown_time + timedelta(minutes=60)
 
     def _in_window(record: dict) -> bool:
         parsed = _parse_collected_timestamp(record.get("@timestamp"))

@@ -1,4 +1,4 @@
-﻿"""
+"""
 ml_pipeline.py
 --------------
 Resilient ML pipeline for Intelligent Log Analysis.
@@ -26,6 +26,7 @@ from typing import Optional
 import solution_engine
 import tamper_detection
 import antiforensics_detector
+import forensics_utils
 from audit_log import write_audit
 import numpy as np
 import pandas as pd
@@ -45,7 +46,7 @@ log = logging.getLogger(__name__)
 ES_HOST = "http://localhost:9200"
 SOURCE_INDEX = "system-logs-*"
 ANOMALY_INDEX = "log-anomalies"
-BATCH_SIZE = 1000
+BATCH_SIZE = 5000
 POLL_INTERVAL = 60
 ML_N_JOBS = int(os.getenv("ML_N_JOBS", "1"))
 
@@ -63,7 +64,40 @@ logging.getLogger("elastic_transport").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-CRASH_EVENT_IDS = {41, 6008, 1001, 7034, 7031, 55, 29}
+# ---------------------------------------------------------------------------
+# Noise suppression: load known-benign Event IDs from external config so they
+# can be tuned without touching this file.
+# 4624/4634 (logon/logoff) are intentionally excluded from suppression —
+# they are needed for lateral movement / pass-the-hash detection.
+# ---------------------------------------------------------------------------
+_NOISE_CONFIG_PATH = BASE_DIR / "noise_config.json"
+
+def _load_event_id_sets() -> tuple[set[int], set[int]]:
+    """Returns (noise_ids, critical_ids) loaded from noise_config.json."""
+    try:
+        with _NOISE_CONFIG_PATH.open("r", encoding="utf-8") as _f:
+            _cfg = json.load(_f)
+        noise = {int(x) for x in _cfg.get("suppressed_event_ids", [])}
+        critical = {int(x) for x in _cfg.get("critical_event_ids", [])}
+        log.info(
+            "Event routing loaded — suppressed: %s IDs, critical bypass: %s IDs.",
+            len(noise), len(critical),
+        )
+        return noise, critical
+    except FileNotFoundError:
+        log.warning("noise_config.json not found — event routing disabled.")
+        return set(), set()
+    except Exception as exc:
+        log.warning("Failed to load noise_config.json: %s — event routing disabled.", exc)
+        return set(), set()
+
+NOISE_EVENT_IDS: set[int]
+CRITICAL_EVENT_IDS: set[int]
+NOISE_EVENT_IDS, CRITICAL_EVENT_IDS = _load_event_id_sets()
+
+
+# Sync with config-loaded sets
+CRASH_EVENT_IDS = CRITICAL_EVENT_IDS
 CRASH_KEYWORDS = [
     "kernel-power",
     "rebooted without clean shutdown",
@@ -83,6 +117,8 @@ EVENT_SIGNAL_WEIGHTS = {
     "41": 4.0,
     "6008": 4.0,
     "1001": 4.0,
+    "1000": 4.5,
+    "1002": 4.2,
     "7034": 3.2,
     "7031": 3.2,
     "55": 4.2,
@@ -119,6 +155,13 @@ BENIGN_KEYWORD_PENALTIES = {
     "service started successfully": 2.0,
     "service has started": 1.5,
     "successfully loaded and registered with filter manager": 2.0,
+}
+LEVEL_PRIORITY = {
+    "CRITICAL": 4,
+    "ERROR": 3,
+    "WARN": 2,
+    "WARNING": 2,
+    "INFO": 1,
 }
 
 
@@ -179,18 +222,6 @@ def _read_json_lines(path: Path) -> list[dict]:
     return records
 
 
-def _parse_timestamp(value: object) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
 def _is_definitive_crash_log(row) -> bool:
     raw_event_id = row.get("event_id")
     try:
@@ -212,7 +243,7 @@ def fetch_logs_from_es(es: Elasticsearch) -> pd.DataFrame:
     response = es.search(
         index=SOURCE_INDEX,
         body={
-            "size": max(BATCH_SIZE, 2000),
+            "size": BATCH_SIZE,
             "sort": [{"@timestamp": {"order": "desc"}}],
             "query": {"match_all": {}}
         }
@@ -228,7 +259,7 @@ def fetch_logs_from_es(es: Elasticsearch) -> pd.DataFrame:
         src = hit["_source"]
         records.append({
             "es_id": hit.get("_id", ""),
-            "timestamp": src.get("@timestamp", datetime.now().isoformat()),
+            "timestamp": src.get("@timestamp") or src.get("time") or datetime.now().isoformat(),
             "level": str(src.get("level", "INFO")).upper(),
             "message": src.get("message", ""),
             "source": src.get("source", "unknown"),
@@ -237,33 +268,6 @@ def fetch_logs_from_es(es: Elasticsearch) -> pd.DataFrame:
         })
 
     df = pd.DataFrame(records)
-    if df.empty:
-        log.warning("No logs found in Elasticsearch.")
-        return df
-
-    crash_anchor_time = None
-    for _, row in df.iterrows():
-        if _is_definitive_crash_log(row):
-            crash_anchor_time = _parse_timestamp(row.get("timestamp"))
-            if crash_anchor_time is not None:
-                break
-
-    if crash_anchor_time is not None:
-        window_start = crash_anchor_time - pd.Timedelta(minutes=30)
-        window_end = crash_anchor_time + pd.Timedelta(minutes=15)
-        parsed_times = df["timestamp"].apply(_parse_timestamp)
-        df = df[parsed_times.apply(lambda item: item is not None and window_start <= item <= window_end)].copy()
-        log.info(
-            "Filtered Elasticsearch logs to latest crash window: %s to %s (%s logs).",
-            window_start.isoformat(),
-            window_end.isoformat(),
-            len(df),
-        )
-    else:
-        log.warning("No definitive crash anchor found in Elasticsearch batch; using recent logs as-is.")
-
-    df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
-    log.info("Fetched %s logs from Elasticsearch.", len(df))
     return df
 
 
@@ -403,6 +407,56 @@ def cluster_anomalies(X: np.ndarray, anomaly_indices: np.ndarray, eps: float = 0
     return cluster_labels
 
 
+def _level_priority(level: str) -> int:
+    return LEVEL_PRIORITY.get(str(level or "INFO").upper(), 1)
+
+
+def _root_cause_min_priority(anomaly_df: pd.DataFrame) -> int:
+    if anomaly_df.empty:
+        return 1
+
+    priorities = anomaly_df["level"].apply(_level_priority)
+    if (priorities >= LEVEL_PRIORITY["ERROR"]).any():
+        return LEVEL_PRIORITY["ERROR"]
+    if (priorities >= LEVEL_PRIORITY["WARN"]).any():
+        return LEVEL_PRIORITY["WARN"]
+    return LEVEL_PRIORITY["INFO"]
+
+
+def _deduplicate_anomaly_frame(anomaly_df: pd.DataFrame) -> pd.DataFrame:
+    if anomaly_df.empty:
+        return anomaly_df.copy()
+
+    working = anomaly_df.copy()
+    if "clean_message" not in working.columns:
+        working["clean_message"] = working["message"].apply(normalize_message)
+
+    working["level_priority"] = working["level"].apply(_level_priority)
+    working["severity_score"] = working["anomaly_score"].apply(lambda value: abs(float(value or 0)))
+    if "root_cause_score" not in working.columns:
+        working["root_cause_score"] = 0.0
+    else:
+        working["root_cause_score"] = working["root_cause_score"].fillna(0.0).astype(float)
+    working["count"] = 1
+
+    deduped_rows: list[pd.Series] = []
+    for _, group in working.groupby(["timestamp", "clean_message"], dropna=False, sort=False):
+        ordered = group.sort_values(
+            ["level_priority", "severity_score", "root_cause_score", "timestamp"],
+            ascending=[False, False, False, False],
+        )
+        representative = ordered.iloc[0].copy()
+        representative["count"] = int(len(group))
+        deduped_rows.append(representative)
+
+    deduped = pd.DataFrame(deduped_rows).reset_index(drop=True)
+    deduped["count"] = deduped["count"].astype(int)
+    deduped["level_priority"] = deduped["level_priority"].astype(int)
+    deduped["severity_score"] = deduped["severity_score"].astype(float)
+    deduped["root_cause_score"] = deduped["root_cause_score"].astype(float)
+    return deduped
+
+
 def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_labels: np.ndarray, n_samples: int = 5) -> dict:
     if len(anomaly_indices) == 0:
         log.info("No anomalies detected - system appears healthy.")
@@ -419,7 +473,8 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
     anomaly_df = df.iloc[anomaly_indices].copy()
     anomaly_df["cluster"] = cluster_labels
     message_counts = anomaly_df["clean_message"].value_counts().to_dict()
-    crash_anchor_time, crash_anchor_message = _find_latest_crash_anchor(df)
+    crash_anchor_time, crash_anchor_log = forensics_utils.find_latest_crash_anchor(df.to_dict("records"))
+    crash_anchor_message = crash_anchor_log.get("message", "") if crash_anchor_log else ""
     anomaly_df["root_cause_score"] = anomaly_df.apply(
         lambda row: _score_root_cause_candidate(
             row,
@@ -428,13 +483,16 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
         ),
         axis=1,
     )
+    anomaly_df = _deduplicate_anomaly_frame(anomaly_df)
+    anomaly_df["eligible_root_cause"] = anomaly_df["level_priority"] >= _root_cause_min_priority(anomaly_df)
     anomaly_df = anomaly_df.sort_values(
-        ["root_cause_score", "anomaly_score", "timestamp"],
-        ascending=[False, True, False],
+        ["eligible_root_cause", "level_priority", "severity_score", "root_cause_score", "timestamp"],
+        ascending=[False, False, False, False, False],
     ).reset_index()
     anomaly_df["root_cause_rank"] = np.arange(1, len(anomaly_df) + 1)
-    df.loc[anomaly_df["index"], "root_cause_score"] = anomaly_df["root_cause_score"].astype(float).values
-    df.loc[anomaly_df["index"], "root_cause_rank"] = anomaly_df["root_cause_rank"].astype(int).values
+    if "index" in anomaly_df.columns:
+        df.loc[anomaly_df["index"], "root_cause_score"] = anomaly_df["root_cause_score"].astype(float).values
+        df.loc[anomaly_df["index"], "root_cause_rank"] = anomaly_df["root_cause_rank"].astype(int).values
     valid_clusters = cluster_labels[cluster_labels != -1]
 
     print("\n" + "=" * 60)
@@ -449,11 +507,12 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
         print("[INFO] All anomalies are noise - no dominant cluster found.")
         _print_cluster_samples(anomaly_df[anomaly_df["cluster"] == -1], label="NOISE / UNCLUSTERED", n_samples=n_samples)
         sample_messages = anomaly_df["message"].head(n_samples).tolist()
-        top_row = anomaly_df.iloc[0] if not anomaly_df.empty else {}
+        eligible_df = anomaly_df[anomaly_df["eligible_root_cause"]]
+        top_row = eligible_df.iloc[0] if not eligible_df.empty else (anomaly_df.iloc[0] if not anomaly_df.empty else {})
         return {
             "root_cause_cluster": -1,
-            "anomaly_count": len(anomaly_indices),
-            "cluster_size": len(anomaly_indices),
+            "anomaly_count": int(anomaly_df["count"].sum()) if "count" in anomaly_df else len(anomaly_indices),
+            "cluster_size": int(top_row.get("count", 1) or 1),
             "sample_messages": sample_messages,
             "log_levels": anomaly_df["level"].value_counts().to_dict(),
             "root_cause_message": sample_messages[0] if sample_messages else "",
@@ -463,11 +522,16 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
             ),
             "fix": "Inspect the top-ranked anomaly and nearby precursor events before the crash marker.",
             "top_root_cause_score": float(top_row.get("root_cause_score", 0) or 0),
+            "root_cause_level": str(top_row.get("level", "") or ""),
+            "root_cause_event_id": top_row.get("event_id"),
+            "root_cause_timestamp": str(top_row.get("timestamp", "") or ""),
+            "root_cause_count": int(top_row.get("count", 1) or 1),
             "suggestion": solution_engine.analyze_cluster(sample_messages),
         }
 
     cluster_summaries = []
     noise_logs = anomaly_df[anomaly_df["cluster"] == -1].copy()
+    min_priority = _root_cause_min_priority(anomaly_df)
     for cluster_id in sorted(set(valid_clusters)):
         cluster_logs = anomaly_df[anomaly_df["cluster"] == cluster_id].copy()
         if cluster_logs.empty:
@@ -476,6 +540,7 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
         max_candidate = float(cluster_logs["root_cause_score"].max() or 0)
         mean_candidate = float(cluster_logs["root_cause_score"].mean() or 0)
         top_severity = abs(float(cluster_logs["anomaly_score"].min() or 0))
+        top_level_priority = int(cluster_logs["level_priority"].max() or 1)
         repetition_bonus = min(2.5, max(0.0, cluster_size - 1) * 0.35)
         cluster_score = (max_candidate * 0.55) + (mean_candidate * 0.30) + (top_severity * 8.0) + repetition_bonus
         cluster_summaries.append(
@@ -483,37 +548,27 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
                 "cluster_id": int(cluster_id),
                 "cluster_size": cluster_size,
                 "cluster_score": float(cluster_score),
+                "top_level_priority": top_level_priority,
+                "top_severity": float(top_severity),
             }
         )
 
-    cluster_summaries.sort(key=lambda item: (item["cluster_score"], item["cluster_size"]), reverse=True)
-    best_cluster = cluster_summaries[0]
+    eligible_cluster_summaries = [item for item in cluster_summaries if item["top_level_priority"] >= min_priority]
+    if not eligible_cluster_summaries:
+        eligible_cluster_summaries = cluster_summaries
+
+    eligible_cluster_summaries.sort(
+        key=lambda item: (
+            item["top_level_priority"],
+            item["top_severity"],
+            item["cluster_score"],
+            item["cluster_size"],
+        ),
+        reverse=True,
+    )
+    best_cluster = eligible_cluster_summaries[0]
     root_cluster_id = best_cluster["cluster_id"]
     root_cluster_size = best_cluster["cluster_size"]
-    noise_top = noise_logs.iloc[0] if not noise_logs.empty else None
-    noise_top_score = float(noise_top.get("root_cause_score", 0) or 0) if noise_top is not None else 0.0
-    cluster_threshold = float(best_cluster["cluster_score"])
-
-    if noise_top is not None and noise_top_score >= (cluster_threshold + 2.5):
-        noise_messages = noise_logs["message"].head(n_samples).tolist()
-        print("\n  [ROOT CAUSE CANDIDATE] Top-ranked noise candidate outranked clustered anomalies.")
-        print(f"     Candidate score      : {noise_top_score:.2f}")
-        print(f"     Best cluster score   : {cluster_threshold:.2f}")
-        return {
-            "root_cause_cluster": -1,
-            "anomaly_count": len(anomaly_indices),
-            "cluster_size": 1,
-            "sample_messages": noise_messages,
-            "log_levels": noise_logs["level"].value_counts().to_dict(),
-            "root_cause_message": str(noise_top.get("message", "") or ""),
-            "description": (
-                "A single crash-signature anomaly outranked the clustered anomalies, so it was selected "
-                "as the approximate root-cause candidate."
-            ),
-            "fix": "Inspect this top-ranked crash-signature event first, then correlate the nearby logs immediately before it.",
-            "top_root_cause_score": noise_top_score,
-            "suggestion": solution_engine.analyze_cluster(noise_messages),
-        }
 
     print(f"\n  [ROOT CAUSE CLUSTER] Cluster #{root_cluster_id}")
     print(f"     Log count in cluster  : {root_cluster_size}")
@@ -539,20 +594,30 @@ def suggest_root_cause(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_la
     print("\n" + "=" * 60)
 
     root_logs = anomaly_df[anomaly_df["cluster"] == root_cluster_id]
+    root_logs = root_logs[root_logs["eligible_root_cause"]] if (root_logs["eligible_root_cause"]).any() else root_logs
+    root_logs = root_logs.sort_values(
+        ["eligible_root_cause", "level_priority", "severity_score", "root_cause_score", "timestamp"],
+        ascending=[False, False, False, False, False],
+    )
+    top_root_row = root_logs.iloc[0] if not root_logs.empty else {}
     sample_messages = root_logs["message"].head(n_samples).tolist()
     return {
         "root_cause_cluster": int(root_cluster_id),
-        "anomaly_count": len(anomaly_indices),
+        "anomaly_count": int(anomaly_df["count"].sum()) if "count" in anomaly_df else len(anomaly_indices),
         "cluster_size": int(root_cluster_size),
         "sample_messages": sample_messages,
         "log_levels": root_logs["level"].value_counts().to_dict(),
-        "root_cause_message": sample_messages[0] if sample_messages else "",
+        "root_cause_message": str(top_root_row.get("message", sample_messages[0] if sample_messages else "") or ""),
         "description": (
             f"Selected cluster {root_cluster_id} because its anomalies were the strongest and closest "
             "to the latest crash marker, not just the most numerous."
         ),
         "fix": "Inspect the highest-ranked events in this cluster first, then correlate the surrounding precursor logs.",
         "top_root_cause_score": float(root_logs["root_cause_score"].max() or 0),
+        "root_cause_level": str(top_root_row.get("level", "") or ""),
+        "root_cause_event_id": top_root_row.get("event_id"),
+        "root_cause_timestamp": str(top_root_row.get("timestamp", "") or ""),
+        "root_cause_count": int(top_root_row.get("count", 1) or 1),
         "suggestion": solution_engine.analyze_cluster(sample_messages),
     }
 
@@ -584,7 +649,7 @@ def _find_latest_crash_anchor(df: pd.DataFrame) -> tuple[Optional[datetime], str
         if not is_crash:
             continue
 
-        parsed = _parse_timestamp(row.get("timestamp"))
+        parsed = forensics_utils.parse_timestamp(row.get("timestamp"))
         if parsed is None:
             continue
         if best_time is None or parsed > best_time:
@@ -623,7 +688,7 @@ def _score_root_cause_candidate(
     repeat_count = message_counts.get(clean_message, 1)
     score += min(2.5, max(0, repeat_count - 1) * 0.4)
 
-    event_time = _parse_timestamp(row.get("timestamp"))
+    event_time = forensics_utils.parse_timestamp(row.get("timestamp"))
     if crash_anchor_time is not None and event_time is not None:
         delta_seconds = (crash_anchor_time - event_time).total_seconds()
         if delta_seconds < -30:
@@ -660,17 +725,24 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
 
     anomalies = []
     root_cluster = root_cause.get("root_cause_cluster")
+    root_timestamp = str(root_cause.get("root_cause_timestamp", "") or "")
+    root_message = str(root_cause.get("root_cause_message", "") or "")
     if len(anomaly_indices) > 0:
         anomaly_df = df.iloc[anomaly_indices].copy()
         anomaly_df["cluster"] = cluster_labels
+        anomaly_df = _deduplicate_anomaly_frame(anomaly_df)
         for _, row in anomaly_df.iterrows():
-            if root_cluster is not None and int(root_cluster) >= 0:
-                is_root_cause = bool(row["cluster"] == root_cluster)
-            else:
-                is_root_cause = int(row.get("root_cause_rank", 0) or 0) == 1
+            row_rank = row.get("root_cause_rank", 0)
+            safe_rank = int(row_rank) if pd.notna(row_rank) else 0
+            is_root_cause = (
+                (root_timestamp and str(row.get("timestamp", "") or "") == root_timestamp and str(row.get("message", "") or "") == root_message)
+                or safe_rank == 1
+            )
+            count = int(row.get("count", 1) or 1)
             anomalies.append({
                 "@timestamp": row["timestamp"],
                 "time": row["timestamp"],
+                "timestamp": row["timestamp"],
                 "level": row["level"],
                 "message": row["message"],
                 "source": row.get("source", "unknown"),
@@ -682,13 +754,19 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
                 "cluster": int(row["cluster"]),
                 "cluster_id": int(row["cluster"]),
                 "root_cause_score": float(row.get("root_cause_score", 0) or 0),
-                "root_cause_rank": int(row.get("root_cause_rank", 0) or 0),
+                "root_cause_rank": safe_rank,
                 "isRootCause": is_root_cause,
                 "is_root_cause": is_root_cause,
-                "suggestion": root_cause.get("suggestion", {}) if is_root_cause else {},
+                "count": count,
+                "rootCause": root_message if (root_cluster is not None and int(root_cluster) >= 0 and int(row["cluster"]) == int(root_cluster)) or is_root_cause else "",
+                "suggestion": root_cause.get("suggestion", {}) if ((root_cluster is not None and int(root_cluster) >= 0 and int(row["cluster"]) == int(root_cluster)) or is_root_cause) else {},
+                # scoring_method distinguishes ML-scored vs rule-bypassed critical events
+                "scoring_method": str(row.get("scoring_method") or "IsolationForest"),
                 "method": "IsolationForest+DBSCAN",
                 "source_log_id": row.get("es_id"),
-                "event_id": row.get("es_id"),
+                "event_id": row.get("event_id"),
+                # False for all docs reaching output — suppressed events are dropped earlier
+                "noise_suppressed": False,
             })
 
     top_score = min((item["score"] for item in anomalies), default=0)
@@ -718,6 +796,15 @@ def save_results_locally(df: pd.DataFrame, anomaly_indices: np.ndarray, cluster_
             "tamper_detected": tamper_detected,
             "antiforensics": antiforensics or {"detected": False, "count": 0, "events": []},
         },
+        "root_cause": {
+            "cluster": root_cluster,
+            "message": root_cause.get("root_cause_message", ""),
+            "level": root_cause.get("root_cause_level", ""),
+            "event_id": root_cause.get("root_cause_event_id"),
+            "timestamp": root_cause.get("root_cause_timestamp", ""),
+            "count": int(root_cause.get("root_cause_count", 1) or 1),
+            "score": float(root_cause.get("top_root_cause_score", 0) or 0),
+        },
         "anomalies": anomalies,
     }
 
@@ -734,21 +821,25 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
 
     anomaly_df = df.iloc[anomaly_indices].copy()
     anomaly_df["cluster"] = cluster_labels
+    anomaly_df = _deduplicate_anomaly_frame(anomaly_df)
     root_cluster = root_cause.get("root_cause_cluster")
     root_message = root_cause.get("root_cause_message", "")
+    root_timestamp = str(root_cause.get("root_cause_timestamp", "") or "")
 
     actions = []
     for _, row in anomaly_df.iterrows():
         cluster_id = int(row["cluster"])
-        if root_cluster is not None and int(root_cluster) >= 0:
-            is_root_cause = bool(cluster_id == root_cluster)
-        else:
-            is_root_cause = int(row.get("root_cause_rank", 0) or 0) == 1
+        row_rank = row.get("root_cause_rank", 0)
+        safe_rank = int(row_rank) if pd.notna(row_rank) else 0
+        is_root_cause = (
+            (root_timestamp and str(row.get("timestamp", "") or "") == root_timestamp and str(row.get("message", "") or "") == root_message)
+            or safe_rank == 1
+        )
         source_log_id = row.get("es_id")
         source_timestamp = row.get("timestamp")
         source_message = row.get("message", "")
         stable_id = hashlib.sha1(
-            f"{source_log_id}|{source_timestamp}|{source_message}".encode("utf-8")
+            f"{source_timestamp}|{row.get('clean_message', source_message)}".encode("utf-8")
         ).hexdigest()
         actions.append({
             "_index": ANOMALY_INDEX,
@@ -756,6 +847,7 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
             "_source": {
                 "@timestamp": row["timestamp"],
                 "time": row["timestamp"],
+                "timestamp": row["timestamp"],
                 "level": row["level"],
                 "message": row["message"],
                 "source": row.get("source", "unknown"),
@@ -767,14 +859,19 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
                 "cluster": cluster_id,
                 "cluster_id": cluster_id,
                 "root_cause_score": float(row.get("root_cause_score", 0) or 0),
-                "root_cause_rank": int(row.get("root_cause_rank", 0) or 0),
+                "root_cause_rank": safe_rank,
                 "isRootCause": is_root_cause,
                 "is_root_cause": is_root_cause,
-                "rootCause": root_message if is_root_cause else "",
-                "suggestion": root_cause.get("suggestion", {}) if is_root_cause else {},
+                "count": int(row.get("count", 1) or 1),
+                "rootCause": root_message if ((root_cluster is not None and int(root_cluster) >= 0 and cluster_id == int(root_cluster)) or is_root_cause) else "",
+                "suggestion": root_cause.get("suggestion", {}) if ((root_cluster is not None and int(root_cluster) >= 0 and cluster_id == int(root_cluster)) or is_root_cause) else {},
+                # scoring_method distinguishes ML-scored vs rule-bypassed critical events
+                "scoring_method": str(row.get("scoring_method") or "IsolationForest"),
                 "method": "IsolationForest+DBSCAN",
                 "source_log_id": source_log_id,
-                "event_id": source_log_id,
+                "event_id": row.get("event_id"),
+                # False for all docs reaching output — suppressed events are dropped earlier
+                "noise_suppressed": False,
                 "source_timestamp": source_timestamp,
                 "analysed_at": datetime.now().isoformat(),
             }
@@ -782,21 +879,6 @@ def push_anomalies_to_es(es: Elasticsearch, df: pd.DataFrame, anomaly_indices: n
 
     helpers.bulk(es, actions)
     log.info("Pushed %s anomalies to index '%s'.", len(actions), ANOMALY_INDEX)
-
-
-def detect_definitive_crash_events(df):
-    """
-    Before running ML, check if definitive 
-    crash Event IDs exist in the logs.
-    These are certain crash indicators that
-    don't need ML to identify.
-    """
-    crash_events = []
-    for _, row in df.iterrows():
-        if _is_definitive_crash_log(row):
-            crash_events.append(row)
-    
-    return crash_events
 
 
 def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
@@ -828,78 +910,104 @@ def run_analysis(es: Optional[Elasticsearch] = None, mode: str = "local"):
             tamper_detection.save_hash(LOCAL_LOG_FILE, COLLECTED_LOGS_DIR / "system_logs.hash")
         return
 
-    df = parse_and_normalize(df)
+    # --- Step 0: Shared Anchor Logic & Forensic Window Calculation ---
+    logs_list = df.to_dict("records")
+    anchor_time, anchor_log = forensics_utils.find_latest_crash_anchor(logs_list)
+    window_start, window_end = forensics_utils.get_forensic_window(anchor_time)
     
-    # Filter out excluded patterns before building feature matrix
+    if anchor_time:
+        log.info("Crash anchor detected at %s. Applying 6-hour forensic window.", anchor_time)
+    else:
+        log.info("No crash anchor detected. Applying rolling 30-minute window.")
+
+    # --- Step 1: DirectCritical Bypass (BEFORE time filtering) ---
+    # Bug Fix: Extract critical events from the FULL batch so they aren't lost to windowing.
+    df["_eid"] = pd.to_numeric(df["event_id"], errors="coerce")
+    critical_mask = df["_eid"].isin(CRITICAL_EVENT_IDS) if CRITICAL_EVENT_IDS else pd.Series(False, index=df.index)
+    critical_df = df[critical_mask].drop(columns=["_eid"]).copy()
+    
+    if not critical_df.empty:
+        log.info("Critical bypass: Captured %s events from full batch.", len(critical_df))
+        critical_df["anomaly"] = 1
+        critical_df["anomaly_score"] = -0.95
+        critical_df["raw_model_score"] = -0.95
+        critical_df["scoring_method"] = "DirectCritical"
+
+    # --- Step 2: Time Window Filtering (for non-critical logs) ---
+    parsed_times = df["timestamp"].apply(forensics_utils.parse_timestamp)
+    df = df[parsed_times.apply(lambda ts: ts is not None and window_start <= ts <= window_end)].copy()
+    log.info("Forensic window filtered: %s logs remain for ML analysis.", len(df))
+
+    df = parse_and_normalize(df)
+
+    # --- Step 3: Suppress known-noisy Event IDs ---
+    if NOISE_EVENT_IDS:
+        pre_noise_count = len(df)
+        df["_event_id_int"] = pd.to_numeric(df["event_id"], errors="coerce")
+        df = df[~df["_event_id_int"].isin(NOISE_EVENT_IDS)].drop(columns=["_event_id_int"]).reset_index(drop=True)
+        suppressed = pre_noise_count - len(df)
+        if suppressed > 0:
+            log.info("Noise suppression: dropped %s events.", suppressed)
+
+    # --- Step 4: Filter out excluded text patterns ---
     initial_count = len(df)
     df = df[~df["clean_message"].str.contains("|".join(EXCLUDE_PATTERNS), case=False, na=False)].reset_index(drop=True)
     if len(df) < initial_count:
-        log.info("Filtered out %s normal/whitelisted logs.", initial_count - len(df))
+        log.info("Filtered out %s normal logs.", initial_count - len(df))
 
-    crash_events = detect_definitive_crash_events(df)
+    # --- Step 5: ML scoring on filtered non-critical logs ---
+    # Ensure we don't re-score critical events that were already captured in Step 1
+    # although Step 1 captured them from full batch, they might be in the current windowed df too.
+    df["_eid"] = pd.to_numeric(df["event_id"], errors="coerce")
+    current_critical_mask = df["_eid"].isin(CRITICAL_EVENT_IDS) if CRITICAL_EVENT_IDS else pd.Series(False, index=df.index)
+    ml_df = df[~current_critical_mask].drop(columns=["_eid"]).reset_index(drop=True)
+    df = df.drop(columns=["_eid"])
+
+    ml_df["anomaly"] = 0
+    ml_df["anomaly_score"] = 0.0
+    ml_df["raw_model_score"] = 0.0
+    ml_df["scoring_method"] = "IsolationForest"
+
+    if len(ml_df) >= 5:
+        X, _ = build_feature_matrix(ml_df["clean_message"].tolist(), max_features=500)
+        log_count = len(ml_df)
+        contamination = 0.1 if log_count < 50 else (0.05 if log_count < 200 else 0.02)
+        log.info("ML scoring %s non-critical logs (contamination=%.2f).", log_count, contamination)
+        anomaly_labels, anomaly_scores, raw_model_scores, _ = detect_anomalies(X, contamination=contamination)
+        ml_df["anomaly"] = anomaly_labels
+        ml_df["anomaly_score"] = anomaly_scores
+        ml_df["raw_model_score"] = raw_model_scores
+    else:
+        log.warning("Too few non-critical logs for ML scoring.")
+
+    # --- Step 6: Merge critical + ML results ---
+    # Merge Step 1 (unfiltered criticals) with Step 5 (ML results from window)
+    df = pd.concat([critical_df, ml_df], ignore_index=True).sort_values(
+        "timestamp", ascending=False
+    ).drop_duplicates(subset=["timestamp", "message", "event_id"]).reset_index(drop=True)
+    if "clean_message" not in df.columns:
+        df["clean_message"] = df["message"].apply(normalize_message)
+    else:
+        missing_clean_message = df["clean_message"].isna()
+        if missing_clean_message.any():
+            df.loc[missing_clean_message, "clean_message"] = df.loc[missing_clean_message, "message"].apply(normalize_message)
+    anomaly_indices = np.where(df["anomaly"] == 1)[0]
+
+    # Build solution suggestion
     crash_messages = [
-        f"EventID {e.get('event_id', '')}: {e.get('message', '')}"
-        for e in crash_events
-    ]
-    direct_suggestion = None
-    if crash_events:
-        log.info(
-            "Found %s definitive crash events. "
-            "Running ML + crash-priority fallback.",
-            len(crash_events)
-        )
-        from solution_engine import analyze_cluster
-        direct_suggestion = analyze_cluster(crash_messages)
+        f"EventID {row.get('event_id', '')}: {row.get('message', '')}"
+        for row in critical_df.to_dict("records")
+    ] if not critical_df.empty else []
+    direct_suggestion = solution_engine.analyze_cluster(crash_messages) if crash_messages else None
 
-    X, _ = build_feature_matrix(df["clean_message"].tolist(), max_features=500)
-
-    log_count = len(df)
-    if log_count < 50:
-        contamination = 0.1
-    elif log_count < 200:
-        contamination = 0.05
-    else:
-        contamination = 0.02
-        
-    log.info("Using adaptive contamination: %s (log count: %s)", contamination, log_count)
-    anomaly_labels, anomaly_scores, raw_model_scores, _ = detect_anomalies(X, contamination=contamination)
-    df["anomaly"] = anomaly_labels
-    df["anomaly_score"] = anomaly_scores
-    df["raw_model_score"] = raw_model_scores
-    anomaly_indices = np.where(anomaly_labels == 1)[0]
-
-    if len(anomaly_indices) == 0 and crash_events:
-        fallback_indices = []
-        for event in crash_events:
-            idx = getattr(event, "name", None)
-            if isinstance(idx, (int, np.integer)) and 0 <= int(idx) < len(df):
-                fallback_indices.append(int(idx))
-
-        fallback_indices = sorted(set(fallback_indices))
-        if fallback_indices:
-            anomaly_indices = np.array(fallback_indices, dtype=int)
-            # Ensure fallback anomalies are visible to API filters that expect
-            # negative anomaly scores.
-            for rank, idx in enumerate(anomaly_indices):
-                current = float(df.at[idx, "anomaly_score"])
-                if current >= 0:
-                    df.at[idx, "anomaly_score"] = -(0.05 + (0.01 * rank))
-            cluster_labels = np.array([0] * len(anomaly_indices))
-            root_cause = {
-                "root_cause_cluster": 0,
-                "anomaly_count": len(anomaly_indices),
-                "cluster_size": len(anomaly_indices),
-                "sample_messages": crash_messages[:5],
-                "log_levels": {"ERROR": len(anomaly_indices)},
-                "root_cause_message": crash_messages[0] if crash_messages else "",
-                "suggestion": direct_suggestion or solution_engine.analyze_cluster(crash_messages),
-            }
-        else:
-            cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=3)
-            root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
-    else:
-        cluster_labels = cluster_anomalies(X, anomaly_indices, eps=0.8, min_samples=3)
-        root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
+    cluster_labels = cluster_anomalies(
+        # Re-build feature matrix on full df for clustering context
+        build_feature_matrix(df["clean_message"].tolist(), max_features=500)[0],
+        anomaly_indices,
+        eps=0.8,
+        min_samples=3,
+    )
+    root_cause = suggest_root_cause(df, anomaly_indices, cluster_labels)
 
     if direct_suggestion:
         root_cause["suggestion"] = direct_suggestion

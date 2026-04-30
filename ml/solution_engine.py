@@ -117,6 +117,24 @@ def analyze_cluster(messages: list[str]) -> dict:
             "commands": ["Get-EventLog -LogName Application -InstanceId 1001 -Newest 5"]
         }
 
+    # 7b. Black screen / WindowsBlackScreenDiagnostics / generic fault buckets
+    if has_kw('windowsblackscreendiagnostics', 'black screen') or has_kw('fault bucket', 'event name: windowsblackscreendiagnosticsv1'):
+        return {
+            "category": "Windows Black Screen",
+            "confidence": "Medium",
+            "likely_cause": "Windows recorded a black-screen diagnostics fault bucket, which usually points to a display-driver, shell startup, or graphics stack failure during session initialization.",
+            "investigate": [
+                "Check recent display driver, GPU utility, and Windows update changes",
+                "Review Application and System logs around the black-screen timestamp for display, DWM, Explorer, or BugCheck events",
+                "If the issue is repeatable, capture reliability history and any WER reports for the same fault bucket"
+            ],
+            "commands": [
+                "Get-EventLog -LogName Application -Newest 50 | Where-Object {$_.Message -like '*BlackScreen*' -or $_.Message -like '*Fault bucket*'}",
+                "Get-WinEvent -LogName System | Where-Object {$_.Message -like '*display*' -or $_.Message -like '*graphics*'} | Select-Object -First 20",
+                "perfmon /rel"
+            ]
+        }
+
     # 8. Service Crash: IDs 7034, 7031
     if has_id('7034') or has_id('7031'):
         return {

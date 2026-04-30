@@ -31,7 +31,14 @@ async def get_anomalies(
     cluster: str | None = Query(default=None),
 ) -> List[Dict[str, Any]]:
     es = getattr(request.app.state, 'es', None)
-    _, window_start, window_end = get_crash_window()
+    
+    # Try to get ES window first for consistency with Dashboard
+    es_crash_time, es_window_start, es_window_end = await get_latest_crash_window_from_es(es)
+    if es_crash_time and es_window_start and es_window_end:
+        window_start, window_end = es_window_start, es_window_end
+    else:
+        _, window_start, window_end = get_crash_window()
+
     if not await is_es_available(es):
         raw_records = get_local_anomalies()
         if window_start:
@@ -47,59 +54,30 @@ async def get_anomalies(
         records.sort(key=anomaly_sort_key)
         return records[:size]
 
-    filters: List[Dict[str, Any]] = []
-    es_crash_time, es_window_start, es_window_end = await get_latest_crash_window_from_es(es)
-    if es_crash_time and es_window_start and es_window_end:
-        window_start, window_end = es_window_start, es_window_end
-    elif window_start and window_end:
-        # Keep local crash window as fallback only if ES crash marker is unavailable.
-        pass
-    else:
-        # Last-resort safety window: keep only very recent anomalies to avoid
-        # showing stale historical docs.
-        now = datetime.now(timezone.utc)
-        window_start = now - timedelta(hours=2)
-        window_end = now
-
-    if window_start:
+    filters = []
+    # If a window is provided, use it; otherwise show all anomalies from the last 24h
+    if window_start and window_end:
         filters.append({'range': {'@timestamp': {'gte': window_start.isoformat(), 'lte': window_end.isoformat()}}})
-    filters.append({'exists': {'field': 'anomaly_score'}})
+    else:
+        filters.append({'range': {'@timestamp': {'gte': 'now-24h'}}})
+    
+    # Always ensure we only show negative scores
     filters.append({'range': {'anomaly_score': {'lt': 0}}})
         
-    if cluster:
-        try:
-            requested_cluster = int(cluster)
-        except ValueError:
-            requested_cluster = None
-
-        if requested_cluster is not None:
-            raw_candidate = requested_cluster - 1
-            filters.append(
-                {
-                    'bool': {
-                        'should': [
-                            {'term': {'cluster_id': raw_candidate}},
-                            {'term': {'cluster': requested_cluster}},
-                        ],
-                        'minimum_should_match': 1,
-                    }
-                }
-            )
-
     body = {
         'size': size,
         'sort': [
-            {'root_cause_rank': {'order': 'asc', 'missing': '_last'}},
-            {'root_cause_score': {'order': 'desc', 'missing': '_last'}},
-            {'anomaly_score': {'order': 'asc', 'missing': '_last'}},
+            {'is_root_cause': {'order': 'desc', 'unmapped_type': 'boolean'}},
+            {'anomaly_score': {'order': 'asc', 'unmapped_type': 'float'}},
             {'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}},
         ],
         'query': {
             'bool': {
-                'filter': filters if filters else [{'match_all': {}}]
+                'filter': filters
             }
         },
     }
+
 
     try:
         response = await es.search(index=ANOMALIES_INDEX, body=body)

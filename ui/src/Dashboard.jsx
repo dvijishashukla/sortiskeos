@@ -97,6 +97,7 @@ function formatAnomalyRows(items) {
     score: toDisplayNumber(item?.score, 0),
     isRootCause: Boolean(item?.isRootCause),
     cluster: toDisplayText(item?.cluster, ""),
+    count: Math.max(1, toDisplayNumber(item?.count, 1)),
     suggestion: item?.suggestion || {},
     rootCause: summarizeRootCause(toDisplayText(item?.rootCause, "")),
   }));
@@ -106,10 +107,10 @@ function buildStats(stats) {
   return [
     { label: "Hardware Pulse", value: "ACTIVE", sub: "tracking psutil host telemetry" },
     { label: "Crash Events", value: String(stats?.totalCrashes ?? 0), sub: "actual system failures" },
-    { label: "Issues in Crash Window", value: String(stats?.totalIssues ?? 0), sub: "logged error events" },
-    { label: "Last Crash", value: formatDisplayDate(stats?.lastCrash?.date), sub: formatDisplayTime(stats?.lastCrash?.time) },
+    { label: "Issues in Crash Window", value: String(stats?.totalIssues ?? 0), sub: "associated anomaly occurrences" },
+    { label: "Last Crash", value: formatDisplayDate(stats?.lastCrash?.date), sub: formatDisplayTime(stats?.lastCrash?.timestamp || stats?.lastCrash?.time) },
     { label: "DBSCAN Focus", value: summarizeRootCause(stats?.rootCause), sub: stats?.rootCause ? "latest event" : "no recent data" },
-    { label: "Anomalies in Crash Window", value: String(stats?.anomalyCount ?? 0), sub: "scored extreme (< -0.05)" },
+    { label: "Anomalies in Crash Window", value: String(stats?.anomalyCount ?? 0), sub: "unique anomaly groups" },
   ];
 }
 
@@ -723,7 +724,25 @@ export default function Dashboard({ onNavigate = () => {} }) {
                   <tr key={a.id} className="table-row">
                     <td style={{ padding: "14px 24px", fontFamily: "'Roboto Mono', monospace", fontSize: 12, color: "#64748b" }}>{a.time}</td>
                     <td style={{ padding: "14px 20px" }}><LevelBadge level={a.level} /></td>
-                    <td style={{ padding: "14px 20px", fontSize: 12, color: "#e2e8f0", maxWidth: 400 }}><span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.message}</span></td>
+                    <td style={{ padding: "14px 20px", fontSize: 12, color: "#e2e8f0", maxWidth: 400 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.message}</span>
+                        {a.count > 1 && (
+                          <span style={{
+                            flexShrink: 0,
+                            background: "rgba(124, 58, 237, 0.12)",
+                            color: "#a78bfa",
+                            border: "1px solid rgba(124, 58, 237, 0.25)",
+                            borderRadius: 999,
+                            padding: "2px 8px",
+                            fontSize: 10,
+                            fontFamily: "monospace",
+                          }}>
+                            x{a.count}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td style={{ padding: "14px 20px" }}><ScoreBadge score={a.score} /></td>
                     <td style={{ padding: "14px 20px", textAlign: "center" }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "#64748b", background: "rgba(255,255,255,0.02)", padding: "4px 8px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.03)" }}>
